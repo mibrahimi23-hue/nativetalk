@@ -1,7 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
+import { useEffect, useState } from "react";
 import { safeBack } from "@/hooks/use-safe-back";
+import { getLesson, listMyLessons } from "@/services/lessons";
 import {
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,6 +13,45 @@ import {
 } from "react-native";
 
 export default function StudentLessonDetail() {
+  const { lessonId, sessionId } = useLocalSearchParams();
+  const [lesson, setLesson] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const id = lessonId || sessionId;
+    setLoading(true);
+    const request = id
+      ? getLesson(String(id))
+      : listMyLessons().then((rows) =>
+          Array.isArray(rows) ? rows.find((l) => l.kind === "lesson_note") || rows[0] : null,
+        );
+
+    request
+      .then((data) => {
+        if (!cancelled) setLesson(data || null);
+      })
+      .catch(() => {
+        if (!cancelled) setLesson(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lessonId, sessionId]);
+
+  const createdAt = lesson?.created_at || lesson?.scheduled_at;
+  const date = createdAt
+    ? new Date(createdAt).toLocaleDateString([], {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "";
+
   return (
     <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -21,23 +63,28 @@ export default function StudentLessonDetail() {
             <Ionicons name="chevron-back" size={22} color="#FFFBFA" />
           </TouchableOpacity>
 
-          <Text style={styles.headerTitle}>Lesson 1</Text>
+          <Text style={styles.headerTitle}>
+            Lesson {lesson?.lesson_number || 1}
+          </Text>
           <View style={{ width: 30 }} />
         </View>
 
-        <Text style={styles.title}>Basic Greetings</Text>
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 24 }} />
+        ) : (
+          <>
+            <Text style={styles.title}>{lesson?.title || "Lesson"}</Text>
 
-        <Text style={styles.tutor}>Tutor: Dr. Alejandro Morales</Text>
-        <Text style={styles.date}>October 15, 2023</Text>
+            <Text style={styles.tutor}>
+              Tutor: {lesson?.tutor_name || lesson?.partner_name || "Tutor"}
+            </Text>
+            <Text style={styles.date}>{date}</Text>
 
-        <Text style={styles.description}>
-          This lesson will cover the basics of Spanish language, including
-          common phrases, grammar rules, and vocabulary.{"\n\n"}
-          This lesson will cover the basics of Spanish language, including
-          common phrases, grammar rules, and vocabulary.{"\n\n"}- This lesson
-          will cover common phrases, grammar rules, and vocabulary.
-          {"\n"}- This lesson will help you practice basic greetings.
-        </Text>
+            <Text style={styles.description}>
+              {lesson?.description || "No lesson notes have been added yet."}
+            </Text>
+          </>
+        )}
       </ScrollView>
 
       <View style={styles.bottomNav}>

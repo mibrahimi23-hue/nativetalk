@@ -1,46 +1,32 @@
-# ── Python ────────────────────────────────────────────────────────────────────
+# Local environment files
+# The project owner intentionally commits these app env files.
+!.env.example
+!Backend/.env
+!Backend/.env.example
+!frontend/.env
+!frontend/.env.example
+
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.Python
-*.egg-info/
-dist/
-build/
-*.egg
-.eggs/
-.claude/
-
-# Virtual environments
+.pytest_cache/
 .venv/
 venv/
-env/
 
-# ── Environment / secrets ─────────────────────────────────────────────────────
-#.env
-#.env.*
-#!.env.example
-
-# ── Expo / React Native ───────────────────────────────────────────────────────
-node_modules/
-.expo/
-web-build/
-expo-env.d.ts
-.metro-health-check*
-*.tsbuildinfo
-
-# ── Uploads (user content, not source code) ───────────────────────────────────
+# Local databases and generated data
+*.db
+*.sqlite
+*.sqlite3
 Backend/uploads/
+Backend/nativetalk.db
 
-# ── OS ────────────────────────────────────────────────────────────────────────
-.DS_Store
-Thumbs.db
+# Node / Expo
+frontend/node_modules/
+frontend/.expo/
+frontend/dist/
 
-# ── IDE ───────────────────────────────────────────────────────────────────────
-.vscode/
-.idea/
-*.swp
-
-# ── Compiled / cache ──────────────────────────────────────────────────────────
-*.pyc
-*.pycache
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

@@ -2,7 +2,16 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { safeBack } from "@/hooks/use-safe-back";
 import { useState } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { useUser } from "@/contexts/user-context";
+import { updateTutorProfile } from "@/services/tutors";
 
 const PLANS = [
   {
@@ -25,9 +34,43 @@ const PLANS = [
   },
 ];
 
+// Maps the radio's id to the backend-accepted enum value.
+const PLAN_BY_KEY = {
+  hourly: "hour_by_hour",
+  fifty: "50_50",
+  eighty: "80_20",
+};
+
 export default function PricingPlans() {
   const { level } = useLocalSearchParams();
+  const { user, refreshMe } = useUser();
   const [selected, setSelected] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  // Tutors land here during onboarding (they have a teacher_id). Students
+  // never reach this screen — they see the tutor's pre-chosen plan in
+  // confirm-payment, so /pricing-plans is tutor-only.
+  const isTutor = !!user?.teacher_id;
+
+  const handleSubscribe = async () => {
+    if (!selected) return;
+    if (isTutor) {
+      setSaving(true);
+      try {
+        await updateTutorProfile({ payment_plan: PLAN_BY_KEY[selected] });
+        await refreshMe();
+      } catch (e) {
+        Alert.alert("Could not save plan", e.message || "Please try again.");
+        setSaving(false);
+        return;
+      }
+      setSaving(false);
+    }
+    router.push({
+      pathname: "/session-price",
+      params: { level, plan: selected },
+    });
+  };
 
   return (
     <View style={styles.container}>
@@ -69,16 +112,15 @@ export default function PricingPlans() {
       })}
 
       <TouchableOpacity
-        style={[styles.btn, !selected && styles.btnDisabled]}
-        disabled={!selected}
-        onPress={() =>
-          router.push({
-            pathname: "/session-price",
-            params: { level, plan: selected },
-          })
-        }
+        style={[styles.btn, (!selected || saving) && styles.btnDisabled]}
+        disabled={!selected || saving}
+        onPress={handleSubscribe}
       >
-        <Text style={styles.btnText}>Subscribe Now</Text>
+        {saving ? (
+          <ActivityIndicator color="#FFFBFA" />
+        ) : (
+          <Text style={styles.btnText}>Subscribe Now</Text>
+        )}
       </TouchableOpacity>
     </View>
   );

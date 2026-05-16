@@ -1,24 +1,82 @@
-import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { safeBack } from "@/hooks/use-safe-back";
+﻿import { Ionicons } from "@expo/vector-icons";
+import { router, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-    Alert,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
+import { safeBack } from "@/hooks/use-safe-back";
+import { listAdminTransactions } from "@/services/admin";
 
-const transactions = [
-  "Spanish Lesson A1",
-  "Spanish Lesson A2-50%",
-  "Spanish Lesson A2-50%",
-  "Spanish Lesson B1",
-  "Spanish Lesson B2-Nouns",
-];
+function formatDate(dateString) {
+  if (!dateString) return "";
+  const d = new Date(dateString);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(
+    d.getDate(),
+  ).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+function planLabel(plan) {
+  if (plan === "hour_by_hour") return "Hourly payment";
+  if (plan === "50_50") return "50% payment";
+  if (plan === "80_20") return "80% payment";
+  return "Payment";
+}
 
 export default function AdminStudentTransactionHistory() {
+  // The Manage Students screen pushes us here with the student's email and
+  // display name as URL params. We use the email to filter the platform
+  // transaction feed down to only this student's rows.
+  const { studentEmail, studentName } = useLocalSearchParams();
+  const targetEmail = (
+    Array.isArray(studentEmail) ? studentEmail[0] : studentEmail || ""
+  )
+    .toString()
+    .toLowerCase();
+  const targetName = (
+    Array.isArray(studentName) ? studentName[0] : studentName || ""
+  )
+    .toString()
+    .toLowerCase();
+
+  const [transactions, setTransactions] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await listAdminTransactions({ limit: 200 });
+      setTransactions(Array.isArray(data) ? data : []);
+    } catch {
+      setTransactions([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Filter the platform-wide transaction feed to rows belonging to *this*
+  // student. We prefer matching by email (unique) and fall back to the
+  // student's display name if email isn't carried on a particular row.
+  const studentTransactions = useMemo(() => {
+    if (!targetEmail && !targetName) return transactions;
+    return transactions.filter((t) => {
+      const email = (t.student_email || "").toString().toLowerCase();
+      const name = (t.student_name || "").toString().toLowerCase();
+      if (targetEmail && email) return email === targetEmail;
+      if (targetName) return name === targetName;
+      return false;
+    });
+  }, [transactions, targetEmail, targetName]);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -30,27 +88,56 @@ export default function AdminStudentTransactionHistory() {
         <View style={{ width: 30 }} />
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false}>
+      {(targetName || targetEmail) && (
+        <Text style={styles.studentLine}>
+          {targetName ? targetName : ""}
+          {targetName && targetEmail ? " · " : ""}
+          {targetEmail ? targetEmail : ""}
+        </Text>
+      )}
+
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 80 }}
+      >
         <Text style={styles.title}>Recent Transactions</Text>
 
-        {transactions.map((item, index) => (
-          <TouchableOpacity
-            key={index}
-            style={styles.transactionRow}
-            onPress={() => Alert.alert("Transaction", item)}
-          >
-            <Text style={styles.transactionTitle}>{item}</Text>
-            <Text style={styles.transactionInfo}>
-              {index === 2
-                ? "Mobile Payment"
-                : index === 1 || index === 4
-                  ? "Credit Card"
-                  : "Debit Card"}{" "}
-              - 10/{21 - index}/2023
-            </Text>
-            <Text style={styles.transfer}>Transfer</Text>
-          </TouchableOpacity>
-        ))}
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 30 }} />
+        ) : studentTransactions.length === 0 ? (
+          <Text style={styles.empty}>
+            No transactions yet for this student.
+          </Text>
+        ) : (
+          studentTransactions.map((item) => (
+            <TouchableOpacity
+              key={item.id}
+              style={styles.transactionRow}
+              onPress={() =>
+                router.push({
+                  pathname: "/admin-transaction-details",
+                  params: { transactionId: item.id },
+                })
+              }
+            >
+              <Text style={styles.transactionTitle}>
+                {item.level ? `${item.level} Lesson` : "Lesson"} ·{" "}
+                €{Number(item.amount || 0).toFixed(2)}
+              </Text>
+              <Text style={styles.transactionInfo}>
+                {planLabel(item.payment_plan)} -{" "}
+                {formatDate(item.paid_at || item.created_at)}
+              </Text>
+              <Text style={styles.transfer}>
+                {item.teacher_name
+                  ? `To ${item.teacher_name}`
+                  : item.kind === "tutor_payout"
+                    ? "Payout"
+                    : "Transfer"}
+              </Text>
+            </TouchableOpacity>
+          ))
+        )}
       </ScrollView>
 
       <View style={styles.bottomNav}>
@@ -85,7 +172,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 28,
+    marginBottom: 12,
   },
 
   backBtn: {
@@ -105,6 +192,14 @@ const styles = StyleSheet.create({
     color: "#28221B",
   },
 
+  studentLine: {
+    fontFamily: "Outfit",
+    fontSize: 12,
+    color: "#7E6D66",
+    marginBottom: 14,
+    textAlign: "center",
+  },
+
   title: {
     fontFamily: "Domine",
     fontSize: 22,
@@ -115,7 +210,7 @@ const styles = StyleSheet.create({
   transactionRow: {
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: "#EEE",
+    borderBottomColor: "#EFE6E1",
   },
 
   transactionTitle: {
@@ -136,6 +231,14 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit",
     fontSize: 14,
     color: "#7E6D66",
+  },
+
+  empty: {
+    fontFamily: "Outfit",
+    fontSize: 12,
+    color: "#7E6D66",
+    textAlign: "center",
+    marginTop: 40,
   },
 
   bottomNav: {

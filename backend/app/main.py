@@ -1,42 +1,60 @@
-"""
-NativeTalk FastAPI application factory.
-
-Start locally:
-    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-Or via Docker Compose:
-    docker compose up
-
-API docs:
-    http://localhost:8000/docs        (Swagger UI)
-    http://localhost:8000/redoc       (ReDoc)
-    http://localhost:8000/api/v1/health
-"""
 from __future__ import annotations
-
 import asyncio
+import os
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import Response
 
+# ✅ Fix circular import — load models FIRST before anything else
+import app.models.users
+import app.models.session
+import app.models.payment
+import app.models.review
+import app.models.teacher
+import app.models.student
+import app.models.language
+import app.models.material
+import app.models.exam
+import app.models.certificate
+import app.models.suspension
+import app.models.message
+
+# NativeTalk core
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import SessionLocal
 from app.services.auto_release import auto_release_overdue_payments
 
+# MyProject routers
+from app.api import (
+    availability,
+    booking,
+    reschedule,
+    suspension,
+    exams,
+    verifications,
+    admin,
+    progress,
+    videocall,
+    certificates,
+    materials,
+    paypal,
+    search,
+    lessons,
+    profile as profile_router,
+)
+
 configure_logging()
-logger      = get_logger("nativetalk")
-settings    = get_settings()
+logger   = get_logger("nativetalk")
+settings = get_settings()
 
-
-# ── Background tasks ──────────────────────────────────────────────────────────
 
 async def _auto_release_scheduler() -> None:
-    """Run payment auto-release every hour."""
     while True:
         await asyncio.sleep(3600)
         db = SessionLocal()
@@ -50,73 +68,89 @@ async def _auto_release_scheduler() -> None:
             db.close()
 
 
-# ── Lifespan ──────────────────────────────────────────────────────────────────
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Application startup / shutdown.
-
-    NOTE: Tables are NOT created here — use Alembic migrations:
-        alembic upgrade head
-    """
-    logger.info("NativeTalk API starting (ENV=%s)...", settings.ENV)
+    logger.info("Merged API starting...")
     task = asyncio.create_task(_auto_release_scheduler())
     yield
     task.cancel()
-    logger.info("NativeTalk API shutting down.")
+    logger.info("Merged API shutting down.")
 
-
-# ── App factory ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title       = "NativeTalk API",
-    description = (
-        "Backend for the NativeTalk language-tutoring platform.\n\n"
-        "**React Native clients** authenticate via Google Sign-In or email/password "
-        "and receive JWT tokens. All authenticated endpoints require:\n\n"
-        "```\nAuthorization: Bearer <access_token>\n```"
-    ),
-    version  = "1.0.0",
-    lifespan = lifespan,
-    docs_url = "/docs",
-    redoc_url = "/redoc",
+    title="Merged NativeTalk API",
+    description="NativeTalk + MyProject merged backend",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
-# React Native bare apps don't enforce CORS, but web/admin dashboards do.
-# Set CORS_ORIGINS in .env to a comma-separated list of allowed origins.
-# Use "*" only during local development.
+# ✅ CORS for React Native
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = settings.cors_origins,
-    allow_credentials = True,
-    allow_methods     = ["*"],
-    allow_headers     = ["*"],
-    expose_headers    = ["X-Request-ID"],
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 
-# ── Request logging middleware ────────────────────────────────────────────────
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         logger.info("→ %s %s", request.method, request.url.path)
         response = await call_next(request)
-        logger.info("← %s %s %s", response.status_code, request.method, request.url.path)
+        logger.info("← %s", response.status_code)
+
+        # ✅ Log full response body on 400 errors so we can see the exact reason
+        if response.status_code == 400:
+            body = b""
+            async for chunk in response.body_iterator:
+                body += chunk
+            logger.error("← 400 detail: %s", body.decode("utf-8", errors="replace"))
+            # Rebuild the response so it still reaches the client
+            return Response(
+                content=body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+
         return response
 
 
 app.add_middleware(RequestLoggingMiddleware)
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ✅ NativeTalk routes
 app.include_router(api_router)
 
+# ✅ MyProject routes
+app.include_router(availability.router,  prefix="/availability",  tags=["Availability"])
+app.include_router(booking.router,       prefix="/booking",       tags=["Booking"])
+app.include_router(reschedule.router,    prefix="/reschedule",    tags=["Reschedule"])
+app.include_router(suspension.router,    prefix="/suspension",    tags=["Suspension"])
+app.include_router(exams.router,         prefix="/exams",         tags=["Exams"])
+app.include_router(verifications.router, prefix="/verifications", tags=["Verifications"])
+app.include_router(admin.router,         prefix="/admin",         tags=["Admin"])
+app.include_router(progress.router,      prefix="/progress",      tags=["Progress"])
+app.include_router(videocall.router,     prefix="/videocall",     tags=["Video Call"])
+app.include_router(certificates.router,  prefix="/certificates",  tags=["Certificates"])
+app.include_router(materials.router,     prefix="/materials",     tags=["Materials"])
+app.include_router(paypal.router,        prefix="/paypal",        tags=["PayPal"])
+app.include_router(search.router,        prefix="/search",        tags=["Search"])
+app.include_router(lessons.router,       prefix="/lessons",       tags=["Lessons"])
+app.include_router(profile_router.router, prefix="/profile",      tags=["Profile"])
 
-# ── Root redirect ─────────────────────────────────────────────────────────────
+# ✅ Serve uploaded files (avatars, certificates, materials) as static assets
+os.makedirs("uploads/avatars", exist_ok=True)
+app.mount("/uploads/avatars", StaticFiles(directory="uploads/avatars"), name="avatars")
+
+
 @app.get("/", include_in_schema=False)
 def root():
     return {
-        "message": "NativeTalk API",
+        "message": "Merged NativeTalk API running! ✅",
         "docs": "/docs",
         "health": "/api/v1/health",
     }

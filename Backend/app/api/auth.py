@@ -4,6 +4,8 @@ from app.db.session import get_db
 from app.models.users import User
 from app.models.teacher import Teacher
 from app.models.student import Student, StudentLanguage
+from app.models.language import Language
+from app.services.timezone import resolve_student_timezone, timezone_for_language
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timezone
 import bcrypt
@@ -17,6 +19,7 @@ class RegisterTeacher(BaseModel):
     email:          EmailStr
     password:       str
     timezone:       str
+    location:       str = None
     language_id:    int
     is_native:      bool = False
     is_certified:   bool = False
@@ -30,6 +33,7 @@ class RegisterStudent(BaseModel):
     email:       EmailStr
     password:    str
     timezone:    str
+    location:    str = None
     language_id: int
     phone:       str = None
 
@@ -59,13 +63,21 @@ def register_teacher(
 
     hashed = bcrypt.hashpw(data.password.encode(), bcrypt.gensalt()).decode()
 
+    language = db.query(Language).filter(Language.id == data.language_id).first()
+    teaching_timezone = (
+        timezone_for_language(language.code) or timezone_for_language(language.name)
+        if language
+        else data.timezone
+    )
+
     user = User(
         id=uuid.uuid4(),
         full_name=data.full_name,
         email=data.email,
         password_hash=hashed,
         role="teacher",
-        timezone=data.timezone,
+        timezone=teaching_timezone,
+        location=data.location,
         phone=data.phone,
         is_active=True,
         is_suspended=False
@@ -130,7 +142,8 @@ def register_student(
         email=data.email,
         password_hash=hashed,
         role="student",
-        timezone=data.timezone,
+        timezone=resolve_student_timezone(data.location, data.timezone),
+        location=data.location,
         phone=data.phone,
         is_active=True,
         is_suspended=False

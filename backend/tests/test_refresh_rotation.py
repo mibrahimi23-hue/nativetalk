@@ -23,7 +23,7 @@ os.environ.setdefault("GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent
 from app.db.session import SessionLocal
 from app.main import app
 from app.db import base as _base_models  # noqa: F401 — registers all models in mapper
-from app.models.user import User
+from app.models.users import User
 
 _TEST_EMAIL = f"refresh_rot_{uuid.uuid4().hex[:8]}@test.com"
 _TEST_PASSWORD = "securepass1"

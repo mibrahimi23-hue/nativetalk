@@ -3,14 +3,18 @@ import { router } from "expo-router";
 import {
   Alert,
   Image,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { Avatar } from "@/components/avatar";
 import { useUser } from "@/contexts/user-context";
 import { safeBack } from "@/hooks/use-safe-back";
+import { buildMediaUrl } from "@/services/api";
+
 
 export default function AdminProfile() {
   const { profile, logout } = useUser();
@@ -19,18 +23,12 @@ export default function AdminProfile() {
     `${profile.firstName || ""} ${profile.lastName || ""}`.trim() ||
     "Admin User";
 
-  const handleLogout = () => {
-    Alert.alert("Log out", "Are you sure you want to log out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Log out",
-        style: "destructive",
-        onPress: () => {
-          logout();
-          router.replace("/login");
-        },
-      },
-    ]);
+  const handleLogout = async () => {
+    // Log out immediately without a confirmation dialog. The user-context's
+    // logout() clears tokens and navigates to /login; we also call replace
+    // here as a belt-and-suspenders against any race with state updates.
+    await logout();
+    router.replace("/login");
   };
 
   return (
@@ -48,14 +46,14 @@ export default function AdminProfile() {
         contentContainerStyle={{ paddingBottom: 90 }}
         showsVerticalScrollIndicator={false}
       >
-        <Image
-          source={{
-            uri:
-              profile.avatar ||
-              "https://images.unsplash.com/photo-1500648767791-00dcc994a43e",
-          }}
-          style={styles.avatar}
-        />
+        <View style={styles.avatarWrap}>
+          <Avatar
+            uri={buildMediaUrl(profile.avatar) || profile.avatar || null}
+            name={fullName || profile.email || "Admin"}
+            seed={profile.email || fullName}
+            size={92}
+          />
+        </View>
 
         <Text style={styles.name}>{fullName}</Text>
         <Text style={styles.role}>Administrator</Text>
@@ -166,6 +164,10 @@ const styles = StyleSheet.create({
     width: 92,
     height: 92,
     borderRadius: 46,
+    alignSelf: "center",
+    marginBottom: 12,
+  },
+  avatarWrap: {
     alignSelf: "center",
     marginBottom: 12,
   },

@@ -1,8 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { safeBack } from "@/hooks/use-safe-back";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+    ActivityIndicator,
+    Alert,
     ScrollView,
     StyleSheet,
     Text,
@@ -10,6 +12,7 @@ import {
     TouchableOpacity,
     View,
 } from "react-native";
+import { getExam, submitExam } from "@/services/exams";
 
 const tabs = [
   { id: "reading", label: "Reading", icon: "book-outline" },
@@ -18,39 +21,132 @@ const tabs = [
   { id: "writing", label: "Writing Skills", icon: "create-outline" },
 ];
 
-const questions = [
-  {
-    id: 1,
-    question: "Question 1: .....",
-    type: "mcq",
-    options: ["Option A", "Option B", "Option C", "Option D"],
-  },
-  {
-    id: 2,
-    question: "Question 2",
-    type: "mcq",
-    options: ["Option A", "Option B", "Option C", "Option D"],
-  },
-  {
-    id: 3,
-    question: "Question 3:...",
-    type: "text",
-  },
-  {
-    id: 4,
-    question: "Question 4:",
-    type: "mcq",
-    options: ["Option A", "Option B", "Option C", "Option D"],
-  },
-];
+// Admin-builder prefixes each question_text with "[Reading] " / "[Writing] "
+// etc. so we can split a flat exam back into the four section tabs.
+function detectSection(text) {
+  const t = String(text || "").trim().toLowerCase();
+  for (const tab of tabs) {
+    if (t.startsWith(`[${tab.label.toLowerCase()}]`)) return tab.id;
+    if (tab.id === "listening" && t.startsWith("[listening")) return "listening";
+    if (tab.id === "writing" && t.startsWith("[writing")) return "writing";
+  }
+  return "reading";
+}
+
+function stripSectionPrefix(text) {
+  return String(text || "").replace(/^\[[^\]]+\]\s*/, "");
+}
 
 export default function LanguageExam() {
+  const params = useLocalSearchParams();
+  const examId = params.examId ? String(params.examId) : null;
+
   const [activeTab, setActiveTab] = useState("reading");
   const [answers, setAnswers] = useState({});
   const [textAnswers, setTextAnswers] = useState({});
 
+  const [questions, setQuestions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!examId) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    getExam(examId)
+      .then((data) => {
+        if (cancelled) return;
+        const list = (data?.questions || []).map((q, idx) => {
+          const optionsObj = q.options || {};
+          return {
+            id: q.question_id || String(idx),
+            section: detectSection(q.question_text),
+            question: `Question ${idx + 1}: ${stripSectionPrefix(q.question_text)}`,
+            type: "mcq",
+            options: [
+              optionsObj.A,
+              optionsObj.B,
+              optionsObj.C,
+              optionsObj.D,
+            ].filter((o) => o !== undefined && o !== null),
+          };
+        });
+        setQuestions(list);
+      })
+      .catch((e) => {
+        Alert.alert("Could not load exam", e?.message || "Please try again later.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [examId]);
+
   const handleSelect = (questionId, option) => {
     setAnswers((prev) => ({ ...prev, [questionId]: option }));
+  };
+
+  // Show questions belonging to the active tab. If no question matched that
+  // section (e.g. older exams without section prefixes), show all of them on
+  // the Reading tab so nothing gets hidden.
+  const visibleQuestions = questions.filter((q) => {
+    const anyHasSection = questions.some((qq) => qq.section !== "reading");
+    if (!anyHasSection) return activeTab === "reading";
+    return q.section === activeTab;
+  });
+
+  const handleFinish = async () => {
+    if (submitting) return;
+    if (!examId) {
+      router.push("/exam-results");
+      return;
+    }
+    if (questions.length === 0) {
+      Alert.alert("Empty exam", "This exam has no questions.");
+      return;
+    }
+
+    const letters = ["A", "B", "C", "D"];
+    const payload = {
+      answers: questions
+        .map((q) => {
+          const selectedText = answers[q.id];
+          if (!selectedText) return null;
+          const idx = q.options.indexOf(selectedText);
+          if (idx < 0) return null;
+          return { question_id: String(q.id), answer: letters[idx] };
+        })
+        .filter(Boolean),
+    };
+
+    if (payload.answers.length === 0) {
+      Alert.alert("Pick at least one answer", "Select an answer before submitting.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const result = await submitExam(examId, payload);
+      router.push({
+        pathname: "/exam-results",
+        params: {
+          score: String(result?.score ?? 0),
+          total: String(result?.total ?? questions.length),
+          percentage: String(result?.percentage ?? "0%"),
+          passed: result?.passed ? "1" : "0",
+          newLevel: result?.new_max_level || "",
+          message: result?.message_result || "",
+        },
+      });
+    } catch (e) {
+      Alert.alert("Could not submit exam", e?.message || "Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -75,7 +171,7 @@ export default function LanguageExam() {
             <Ionicons
               name={tab.icon}
               size={16}
-              color={activeTab === tab.id ? "#FF9E6D" : "#777"}
+              color={activeTab === tab.id ? "#FF9E6D" : "#7E6D66"}
             />
             <Text
               style={[
@@ -100,46 +196,54 @@ export default function LanguageExam() {
         </Text>
 
         {/* Questions */}
-        {questions.map((q) => (
-          <View key={q.id} style={styles.questionBlock}>
-            <Text style={styles.questionText}>{q.question}</Text>
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 30 }} />
+        ) : visibleQuestions.length === 0 ? (
+          <Text style={styles.questionText}>
+            No questions in this section.
+          </Text>
+        ) : (
+          visibleQuestions.map((q) => (
+            <View key={q.id} style={styles.questionBlock}>
+              <Text style={styles.questionText}>{q.question}</Text>
 
-            {q.type === "mcq" ? (
-              q.options.map((option) => (
-                <TouchableOpacity
-                  key={option}
-                  style={styles.optionRow}
-                  onPress={() => handleSelect(q.id, option)}
-                >
-                  <View
-                    style={[
-                      styles.radioCircle,
-                      answers[q.id] === option && styles.radioCircleSelected,
-                    ]}
-                  />
-                  <Text
-                    style={[
-                      styles.optionText,
-                      answers[q.id] === option && styles.optionTextSelected,
-                    ]}
+              {q.type === "mcq" ? (
+                q.options.map((option) => (
+                  <TouchableOpacity
+                    key={option}
+                    style={styles.optionRow}
+                    onPress={() => handleSelect(q.id, option)}
                   >
-                    {option}
-                  </Text>
-                </TouchableOpacity>
-              ))
-            ) : (
-              <TextInput
-                style={styles.textInput}
-                placeholder="Enter answer here"
-                placeholderTextColor="#bbb"
-                value={textAnswers[q.id] || ""}
-                onChangeText={(text) =>
-                  setTextAnswers((prev) => ({ ...prev, [q.id]: text }))
-                }
-              />
-            )}
-          </View>
-        ))}
+                    <View
+                      style={[
+                        styles.radioCircle,
+                        answers[q.id] === option && styles.radioCircleSelected,
+                      ]}
+                    />
+                    <Text
+                      style={[
+                        styles.optionText,
+                        answers[q.id] === option && styles.optionTextSelected,
+                      ]}
+                    >
+                      {option}
+                    </Text>
+                  </TouchableOpacity>
+                ))
+              ) : (
+                <TextInput
+                  style={styles.textInput}
+                  placeholder="Enter answer here"
+                  placeholderTextColor="#bbb"
+                  value={textAnswers[q.id] || ""}
+                  onChangeText={(text) =>
+                    setTextAnswers((prev) => ({ ...prev, [q.id]: text }))
+                  }
+                />
+              )}
+            </View>
+          ))
+        )}
 
         <View style={{ height: 100 }} />
       </ScrollView>
@@ -147,10 +251,15 @@ export default function LanguageExam() {
       {/* Finish Exam Button */}
       <View style={styles.bottomBtn}>
         <TouchableOpacity
-          style={styles.finishBtn}
-          onPress={() => router.push("/exam-results")}
+          style={[styles.finishBtn, submitting && { opacity: 0.7 }]}
+          onPress={handleFinish}
+          disabled={submitting || loading}
         >
-          <Text style={styles.finishBtnText}>Finish exam</Text>
+          {submitting ? (
+            <ActivityIndicator color="#FFFBFA" />
+          ) : (
+            <Text style={styles.finishBtnText}>Finish exam</Text>
+          )}
         </TouchableOpacity>
       </View>
     </View>
@@ -192,7 +301,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+    borderBottomColor: "#EFE6E1",
     gap: 10,
   },
   tabItem: {
@@ -203,7 +312,7 @@ const styles = StyleSheet.create({
   },
   tabLabel: {
     fontSize: 14,
-    color: "#777",
+    color: "#7E6D66",
   },
   tabLabelActive: {
     color: "#FF9E6D",

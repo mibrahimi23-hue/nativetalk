@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy import or_, and_
 from app.db.session import get_db
-from app.models.messages import Message
+from app.models.message import Message
 from app.models.users import User
 from pydantic import BaseModel
 from datetime import datetime, timezone

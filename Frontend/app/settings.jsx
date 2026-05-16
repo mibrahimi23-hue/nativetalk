@@ -3,6 +3,7 @@ import { router } from "expo-router";
 import { useState } from "react";
 import {
   Alert,
+  Platform,
   ScrollView,
   StyleSheet,
   Switch,
@@ -11,63 +12,66 @@ import {
   View,
 } from "react-native";
 import { useUser } from "@/contexts/user-context";
+import { useTheme, useThemeColors } from "@/contexts/theme-context";
 import { useSafeBack } from "@/hooks/use-safe-back";
+
 
 export default function Settings() {
   const safeBack = useSafeBack();
   const { logout } = useUser();
-  const [darkMode, setDarkMode] = useState(false);
+  const { darkMode, setDarkMode } = useTheme();
+  const colors = useThemeColors();
   const [autoplay, setAutoplay] = useState(true);
 
-  const handleLogout = () => {
-    Alert.alert("Log out", "Are you sure you want to log out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Log out",
-        style: "destructive",
-        onPress: () => {
-          logout();
-          router.replace("/login");
-        },
-      },
-    ]);
+  const handleLogout = async () => {
+    await logout();
+    router.replace("/login");
   };
 
   return (
-    <View style={styles.wrapper}>
+    <View style={[styles.wrapper, { backgroundColor: colors.background }]}>
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={() => safeBack()}>
           <Ionicons name="chevron-back" size={20} color="#FFFBFA" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Settings</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Settings</Text>
         <View style={{ width: 36 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.sectionTitle}>Preferences</Text>
+        <Text style={[styles.sectionTitle, { color: colors.textSubtle }]}>
+          Preferences
+        </Text>
         <Toggle
           label="Dark mode"
           value={darkMode}
           onValueChange={setDarkMode}
+          colors={colors}
         />
         <Toggle
           label="Autoplay lesson videos"
           value={autoplay}
           onValueChange={setAutoplay}
+          colors={colors}
         />
 
-        <Text style={styles.sectionTitle}>Account</Text>
+        <Text style={[styles.sectionTitle, { color: colors.textSubtle }]}>
+          Account
+        </Text>
         <LinkRow
           label="Edit profile"
           onPress={() => router.push("/edit-profile")}
+          colors={colors}
         />
         <LinkRow
           label="Notifications"
           onPress={() => router.push("/notifications")}
+          colors={colors}
         />
         <LinkRow
           label="Privacy"
           onPress={() => router.push("/privacy")}
+          colors={colors}
         />
 
       </ScrollView>
@@ -75,30 +79,34 @@ export default function Settings() {
   );
 }
 
-function Toggle({ label, value, onValueChange }) {
+function Toggle({ label, value, onValueChange, colors }) {
   return (
-    <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
+    <View style={[styles.row, { borderBottomColor: colors.divider }]}>
+      <Text style={[styles.rowLabel, { color: colors.text }]}>{label}</Text>
       <Switch
         value={value}
         onValueChange={onValueChange}
-        trackColor={{ false: "#EFE6E1", true: "#FF9E6D" }}
+        trackColor={{ false: colors.divider, true: "#FF9E6D" }}
         thumbColor="#FFFBFA"
       />
     </View>
   );
 }
 
-function LinkRow({ label, onPress }) {
+function LinkRow({ label, onPress, colors }) {
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Ionicons name="chevron-forward" size={18} color="#28221B" />
+    <TouchableOpacity
+      style={[styles.row, { borderBottomColor: colors.divider }]}
+      onPress={onPress}
+    >
+      <Text style={[styles.rowLabel, { color: colors.text }]}>{label}</Text>
+      <Ionicons name="chevron-forward" size={18} color={colors.text} />
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
+  // backgroundColor is overridden inline based on theme
   wrapper: { flex: 1, backgroundColor: "#FFFBFA" },
   header: {
     flexDirection: "row",

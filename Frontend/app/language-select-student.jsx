@@ -1,7 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,28 +12,55 @@ import {
 } from "react-native";
 import { useUser } from "@/contexts/user-context";
 import { safeBack } from "@/hooks/use-safe-back";
-
-const languages = [
-  { id: 1, name: "English", flag: "🇺🇸" },
-  { id: 2, name: "Spanish", flag: "🇪🇸" },
-  { id: 3, name: "German", flag: "🇩🇪" },
-  { id: 4, name: "French", flag: "🇫🇷" },
-  { id: 5, name: "Italian", flag: "🇮🇹" },
-  { id: 6, name: "Turkish", flag: "🇹🇷" },
-  { id: 7, name: "Greek", flag: "🇬🇷" },
-  { id: 8, name: "Korean", flag: "🇰🇷" },
-  { id: 9, name: "Russian", flag: "🇷🇺" },
-  { id: 10, name: "Bulgarian", flag: "🇧🇬" },
-];
+import { LANGUAGES } from "@/constants/languages";
 
 export default function LanguageSelectStudent() {
-  const { setProfile } = useUser();
+  const { register, setLanguageSelection } = useUser();
+  const params = useLocalSearchParams();
   const [selected, setSelected] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleContinue = () => {
-    const lang = languages.find((l) => l.id === selected);
-    if (lang) setProfile({ language: lang.name });
-    router.push("/student-dashboard");
+  const hasPendingRegistration = !!(params.email && params.password);
+
+  const handleContinue = async () => {
+    const lang = LANGUAGES.find((l) => l.id === selected);
+    if (!lang) return;
+    setLanguageSelection({ id: lang.id, name: lang.name });
+
+    if (!hasPendingRegistration) {
+      router.push("/student-dashboard");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const fullName = `${params.firstName || ""} ${params.lastName || ""}`.trim();
+      await register({
+        email: String(params.email),
+        password: String(params.password),
+        full_name: fullName,
+        role: "student",
+        language_id: lang.id,
+        phone: params.phone ? String(params.phone) : undefined,
+        location: params.location ? String(params.location) : undefined,
+      });
+      router.replace("/student-dashboard");
+    } catch (e) {
+      // "Email already registered" — route back to the signup form so we
+      // can surface the inline "This account is registered. Login" hint
+      // instead of a popup.
+      const msg = e?.message || "";
+      if (/already registered/i.test(msg)) {
+        router.replace({
+          pathname: "/register",
+          params: { emailExists: "1", email: String(params.email || "") },
+        });
+        return;
+      }
+      Alert.alert("Sign up failed", msg || "Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -51,7 +80,7 @@ export default function LanguageSelectStudent() {
         <Text style={styles.title}>Languages</Text>
         <Text style={styles.subtitle}>Choose your preferred language</Text>
 
-        {languages.map((lang, index) => (
+        {LANGUAGES.map((lang, index) => (
           <View key={lang.id}>
             <TouchableOpacity
               style={[
@@ -71,7 +100,7 @@ export default function LanguageSelectStudent() {
               </Text>
             </TouchableOpacity>
 
-            {index < languages.length - 1 && <View style={styles.divider} />}
+            {index < LANGUAGES.length - 1 && <View style={styles.divider} />}
           </View>
         ))}
 
@@ -80,11 +109,18 @@ export default function LanguageSelectStudent() {
 
       <View style={styles.bottomBtn}>
         <TouchableOpacity
-          disabled={!selected}
-          style={[styles.continueBtn, !selected && styles.continueBtnDisabled]}
+          disabled={!selected || submitting}
+          style={[
+            styles.continueBtn,
+            (!selected || submitting) && styles.continueBtnDisabled,
+          ]}
           onPress={handleContinue}
         >
-          <Text style={styles.continueBtnText}>Continue</Text>
+          {submitting ? (
+            <ActivityIndicator color="#FFFBFA" />
+          ) : (
+            <Text style={styles.continueBtnText}>Continue</Text>
+          )}
         </TouchableOpacity>
       </View>
     </View>
@@ -135,7 +171,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 16,
     paddingHorizontal: 14,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#FFFBFA",
     borderWidth: 1,
     borderColor: "transparent",
     borderRadius: 16,

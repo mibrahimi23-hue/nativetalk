@@ -14,7 +14,8 @@ class Exam(Base):
     language_id = Column(Integer, ForeignKey("languages.id"), nullable=False)
     level       = Column(String(3), nullable=False)
     title       = Column(String(100), nullable=False)
-    created_by  = Column(UUID(as_uuid=True), ForeignKey("teachers.id"), nullable=False)
+    # Nullable: admin-authored exams have no Teacher row to attribute them to.
+    created_by  = Column(UUID(as_uuid=True), ForeignKey("teachers.id"), nullable=True)
     is_active   = Column(Boolean, default=True)
     created_at  = Column(TIMESTAMP(timezone=True), server_default=func.now())
 

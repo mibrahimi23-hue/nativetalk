@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
 import {
   ScrollView,
@@ -10,28 +10,25 @@ import {
 } from "react-native";
 import { useUser } from "@/contexts/user-context";
 import { safeBack } from "@/hooks/use-safe-back";
-
-const languages = [
-  { id: 1, name: "English", flag: "🇺🇸" },
-  { id: 2, name: "Spanish", flag: "🇪🇸" },
-  { id: 3, name: "German", flag: "🇩🇪" },
-  { id: 4, name: "French", flag: "🇫🇷" },
-  { id: 5, name: "Italian", flag: "🇮🇹" },
-  { id: 6, name: "Turkish", flag: "🇹🇷" },
-  { id: 7, name: "Greek", flag: "🇬🇷" },
-  { id: 8, name: "Korean", flag: "🇰🇷" },
-  { id: 9, name: "Russian", flag: "🇷🇺" },
-  { id: 10, name: "Bulgarian", flag: "🇧🇬" },
-];
+import { LANGUAGES } from "@/constants/languages";
 
 export default function LanguageSelectTutor() {
-  const { setProfile } = useUser();
+  const { setLanguageSelection } = useUser();
+  const params = useLocalSearchParams();
   const [selected, setSelected] = useState(null);
 
   const handleContinue = () => {
-    const lang = languages.find((l) => l.id === selected);
-    if (lang) setProfile({ language: lang.name });
-    router.push("/tutor-certification");
+    const lang = LANGUAGES.find((l) => l.id === selected);
+    if (!lang) return;
+    setLanguageSelection({ id: lang.id, name: lang.name });
+    router.push({
+      pathname: "/tutor-certification",
+      params: {
+        ...params,
+        languageId: String(lang.id),
+        languageName: lang.name,
+      },
+    });
   };
 
   return (
@@ -51,7 +48,7 @@ export default function LanguageSelectTutor() {
         <Text style={styles.title}>Languages</Text>
         <Text style={styles.subtitle}>Choose your preferred language</Text>
 
-        {languages.map((lang, index) => (
+        {LANGUAGES.map((lang, index) => (
           <View key={lang.id}>
             <TouchableOpacity
               style={[
@@ -71,7 +68,7 @@ export default function LanguageSelectTutor() {
               </Text>
             </TouchableOpacity>
 
-            {index < languages.length - 1 && <View style={styles.divider} />}
+            {index < LANGUAGES.length - 1 && <View style={styles.divider} />}
           </View>
         ))}
 
@@ -145,7 +142,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "transparent",
     borderRadius: 16,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#FFFBFA",
   },
 
   langRowSelected: { borderColor: "#FF9E6D" },

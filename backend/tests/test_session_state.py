@@ -33,7 +33,7 @@ from app.models.payment import CoursePayment
 from app.models.session import Session as BookingSession
 from app.models.student import Student
 from app.models.tutor import Teacher
-from app.models.user import User
+from app.models.users import User
 
 
 @pytest.fixture(scope="module")

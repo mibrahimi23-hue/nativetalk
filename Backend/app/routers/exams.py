@@ -233,12 +233,46 @@ def submit_exam(
     passed = (score / len(exam.questions)) >= PASS_SCORE
     attempt.score  = score
     attempt.passed = passed
+
+    # Cert-flag cap. The exam alone can't lift above this — B1+ requires a
+    # real certificate.
+    if teacher.is_certified and teacher.has_experience:
+        cert_cap_idx = LEVELS.index("C2")
+    elif teacher.is_certified:
+        cert_cap_idx = LEVELS.index("B2")
+    else:
+        cert_cap_idx = LEVELS.index("A2")
+
     if passed:
-        if LEVELS.index(exam.level) > LEVELS.index(teacher.max_level):
-            teacher.max_level   = exam.level
+        target_idx = min(LEVELS.index(exam.level), cert_cap_idx)
+        if target_idx > LEVELS.index(teacher.max_level):
+            teacher.max_level = LEVELS[target_idx]
         teacher.passed_exam = True
 
     db.commit()
+
+    current_level = teacher.max_level
+    cert_cap_level = LEVELS[cert_cap_idx]
+    needs_cert_for_exam_level = (
+        passed and LEVELS.index(exam.level) > cert_cap_idx
+    )
+
+    if passed and needs_cert_for_exam_level:
+        result_message = (
+            f"You passed the {exam.level} exam, but teaching {exam.level} "
+            f"requires a language certificate. You can still teach up to "
+            f"{current_level}. Upload a certificate to unlock {exam.level}."
+        )
+    elif passed:
+        result_message = (
+            f"Congratulations! You passed and can now teach up to "
+            f"{current_level}."
+        )
+    else:
+        result_message = (
+            f"You did not pass — you need {int(PASS_SCORE * 100)}%. "
+            f"You can't teach yet. Try the exam again to unlock teaching."
+        )
 
     return {
         "message":     "Exam submitted successfully!",
@@ -248,12 +282,9 @@ def submit_exam(
         "percentage":  f"{round((score / len(exam.questions)) * 100, 1)}%",
         "passed":      passed,
         "pass_required": f"{int(PASS_SCORE * 100)}%",
-        "new_max_level": teacher.max_level if passed else None,
-        "message_result": (
-            f"Congratulations! You passed and can now teach up to {exam.level}!"
-            if passed else
-            f"You did not pass. You need {int(PASS_SCORE * 100)}% to pass. Try again!"
-        )
+        "new_max_level": current_level if passed else None,
+        "cert_cap":       cert_cap_level,
+        "message_result": result_message,
     }
 
 @router.get("/list/{language_id}/{level}")

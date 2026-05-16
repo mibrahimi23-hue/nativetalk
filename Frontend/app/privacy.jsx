@@ -9,12 +9,18 @@ import {
   View,
 } from "react-native";
 import { useSafeBack } from "@/hooks/use-safe-back";
+import { useUser } from "@/contexts/user-context";
 
 export default function Privacy() {
   const safeBack = useSafeBack();
-  const [showProfile, setShowProfile] = useState(true);
+  const { role } = useUser();
+  const isAdmin = role === "Admin";
+  const isTutor = role === "Tutor";
+  const hideProgress = isAdmin || isTutor;
+
+  const [showProfile, setShowProfile] = useState(!isAdmin);
   const [showOnline, setShowOnline] = useState(true);
-  const [allowMessages, setAllowMessages] = useState(true);
+  const [allowMessages, setAllowMessages] = useState(!isAdmin);
   const [shareProgress, setShareProgress] = useState(false);
 
   return (
@@ -30,7 +36,11 @@ export default function Privacy() {
       <ScrollView contentContainerStyle={styles.content}>
         <Toggle
           label="Public profile"
-          description="Others can find and view your profile"
+          description={
+            isAdmin
+              ? "Admin profiles are private by default"
+              : "Others can find and view your profile"
+          }
           value={showProfile}
           onValueChange={setShowProfile}
         />
@@ -42,16 +52,22 @@ export default function Privacy() {
         />
         <Toggle
           label="Allow direct messages"
-          description="Anyone can start a chat with you"
+          description={
+            isAdmin
+              ? "Restrict who can message the admin account"
+              : "Anyone can start a chat with you"
+          }
           value={allowMessages}
           onValueChange={setAllowMessages}
         />
-        <Toggle
-          label="Share learning progress"
-          description="Show your level on the public profile"
-          value={shareProgress}
-          onValueChange={setShareProgress}
-        />
+        {hideProgress ? null : (
+          <Toggle
+            label="Share learning progress"
+            description="Show your level on the public profile"
+            value={shareProgress}
+            onValueChange={setShareProgress}
+          />
+        )}
       </ScrollView>
     </View>
   );

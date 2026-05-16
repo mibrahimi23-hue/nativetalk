@@ -1,6 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router, usePathname } from "expo-router";
-import { StyleSheet, TouchableOpacity, View } from "react-native";
+import { router, usePathname, useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
+import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { listConversations } from "@/services/chat";
 
 const ITEMS = [
   { icon: "home-outline", route: "/tutor-dashboard" },
@@ -12,11 +14,40 @@ const ITEMS = [
 
 export function TutorBottomNav() {
   const pathname = usePathname();
+  const [unreadTotal, setUnreadTotal] = useState(0);
+
+  // Palette matches the wireframe exactly: brand orange for the active tab,
+  // dark brown for the inactive ones. The bottom-nav surface itself is kept
+  // cream in both light and dark modes (see theme-context.jsx) so these
+  // colours stay clearly visible regardless of the page theme.
+  const activeColor = "#FF9E6D";
+  const inactiveColor = "#28221B";
+
+  // Recount unread messages each time the screen with this nav gains focus.
+  // Cheap because the conversations endpoint returns small payloads.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      listConversations()
+        .then((data) => {
+          if (cancelled) return;
+          const total = Array.isArray(data)
+            ? data.reduce((acc, c) => acc + Number(c.unread_count || 0), 0)
+            : 0;
+          setUnreadTotal(total);
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }, []),
+  );
 
   return (
     <View style={styles.bottomNav}>
       {ITEMS.map((it) => {
         const active = pathname === it.route;
+        const showBadge = it.route === "/messages" && unreadTotal > 0;
         return (
           <TouchableOpacity
             key={it.route}
@@ -24,11 +55,20 @@ export function TutorBottomNav() {
             style={styles.navItem}
             activeOpacity={0.7}
           >
-            <Ionicons
-              name={it.icon}
-              size={24}
-              color={active ? "#FF9E6D" : "#28221B"}
-            />
+            <View>
+              <Ionicons
+                name={it.icon}
+                size={24}
+                color={active ? activeColor : inactiveColor}
+              />
+              {showBadge ? (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>
+                    {unreadTotal > 9 ? "9+" : unreadTotal}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
           </TouchableOpacity>
         );
       })}
@@ -56,5 +96,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 8,
+  },
+  badge: {
+    position: "absolute",
+    top: -4,
+    right: -8,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 4,
+    backgroundColor: "#FF9E6D",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badgeText: {
+    fontFamily: "Outfit",
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#FFFBFA",
   },
 });

@@ -1,19 +1,24 @@
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useUser } from "@/contexts/user-context";
 
 export default function RoleSelectionScreen() {
   const { setRole: setUserRole } = useUser();
+  const params = useLocalSearchParams();
   const [role, setRole] = useState(null);
 
   const handleContinue = () => {
     if (!role) return;
     setUserRole(role);
+    const forward = {
+      ...params,
+      role,
+    };
     if (role === "Tutor") {
-      router.push("/language-select-tutor");
+      router.push({ pathname: "/language-select-tutor", params: forward });
     } else if (role === "Learner") {
-      router.push("/language-select-student");
+      router.push({ pathname: "/language-select-student", params: forward });
     }
   };
 

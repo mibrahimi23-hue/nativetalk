@@ -100,13 +100,10 @@ class BookingValidator:
             )
 
     def check_hours(self, level: str, total_hours: int):
-        hours_limit = self.db.query(LevelHours).filter_by(level=level).first()
-        if not hours_limit:
-            raise HTTPException(status_code=400, detail="Hours not found!")
-        if not (hours_limit.hours_min <= total_hours <= hours_limit.hours_max):
+        if total_hours < 1:
             raise HTTPException(
                 status_code=400,
-                detail=f"Hours must be between {hours_limit.hours_min}-{hours_limit.hours_max}!"
+                detail="Total hours must be at least 1."
             )
 
     def run_all(

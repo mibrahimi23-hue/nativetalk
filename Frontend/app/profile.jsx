@@ -1,34 +1,50 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Image,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { Avatar } from "@/components/avatar";
 import { TutorBottomNav } from "@/components/tutor-bottom-nav";
 import { useUser } from "@/contexts/user-context";
 import { useSafeBack } from "@/hooks/use-safe-back";
+import { buildMediaUrl } from "@/services/api";
+import { getPricingRanges } from "@/services/auth";
+
 
 export default function Profile() {
   const { profile, role, logout } = useUser();
   const safeBack = useSafeBack();
+  const [pricingRanges, setPricingRanges] = useState([]);
 
-  const handleLogout = () => {
-    Alert.alert("Log out", "Are you sure you want to log out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Log out",
-        style: "destructive",
-        onPress: () => {
-          logout();
-          router.replace("/login");
-        },
-      },
-    ]);
+  useEffect(() => {
+    if (role !== "Tutor") return;
+    let cancelled = false;
+    getPricingRanges()
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) setPricingRanges(data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [role]);
+
+  const rangeForLevel = useMemo(
+    () => pricingRanges.find((r) => r.level === profile.level),
+    [pricingRanges, profile.level],
+  );
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace("/login");
   };
 
   const fullName =
@@ -57,18 +73,50 @@ export default function Profile() {
         contentContainerStyle={{ paddingBottom: 80 }}
         showsVerticalScrollIndicator={false}
       >
-        <Image
-          source={{
-            uri:
-              profile.avatar ||
-              "https://images.unsplash.com/photo-1494790108377-be9c29b29330",
-          }}
-          style={styles.avatar}
-        />
+        <View style={styles.avatarWrap}>
+          <Avatar
+            uri={buildMediaUrl(profile.avatar) || profile.avatar || null}
+            name={fullName || profile.email}
+            seed={profile.email || fullName}
+            size={96}
+          />
+        </View>
 
         <Text style={styles.name}>{fullName}</Text>
         <Text style={styles.bio}>{bio}</Text>
         <Text style={styles.level}>{levelLine}</Text>
+
+        {role === "Tutor" ? (
+          <View style={styles.priceCard}>
+            <View style={styles.priceRow}>
+              <Text style={styles.priceLabel}>Your hourly rate</Text>
+              <Text style={styles.priceValue}>
+                {profile.hourlyRate != null
+                  ? `€${Number(profile.hourlyRate).toFixed(2)}/hr`
+                  : "Not set"}
+              </Text>
+            </View>
+            {rangeForLevel ? (
+              <>
+                <View style={styles.priceRow}>
+                  <Text style={styles.priceLabel}>
+                    Allowed for {rangeForLevel.level}
+                  </Text>
+                  <Text style={styles.priceValueDim}>
+                    €{rangeForLevel.price_min.toFixed(2)} – €
+                    {rangeForLevel.price_max.toFixed(2)}/hr
+                  </Text>
+                </View>
+                <View style={styles.priceRow}>
+                  <Text style={styles.priceLabel}>Course hours</Text>
+                  <Text style={styles.priceValueDim}>
+                    {rangeForLevel.hours_min}-{rangeForLevel.hours_max} hours
+                  </Text>
+                </View>
+              </>
+            ) : null}
+          </View>
+        ) : null}
 
         <TouchableOpacity
           style={styles.editBtn}
@@ -79,6 +127,13 @@ export default function Profile() {
 
         <Text style={styles.settingsTitle}>Settings</Text>
 
+        {role === "Tutor" ? (
+          <MenuItem
+            icon="calendar-outline"
+            title="Edit availability"
+            route="/availability"
+          />
+        ) : null}
         <MenuItem icon="information-circle-outline" title="About" route="/about" />
         <MenuItem icon="lock-closed-outline" title="Privacy" route="/privacy" />
         <MenuItem
@@ -152,6 +207,10 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     marginBottom: 10,
   },
+  avatarWrap: {
+    alignSelf: "center",
+    marginBottom: 10,
+  },
   name: {
     fontFamily: "Domine",
     fontSize: 18,
@@ -174,6 +233,40 @@ const styles = StyleSheet.create({
     color: "#28221B",
     marginTop: 4,
   },
+  priceCard: {
+    backgroundColor: "#FFF1E8",
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginTop: 18,
+  },
+
+  priceRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 4,
+  },
+
+  priceLabel: {
+    fontFamily: "Outfit",
+    fontSize: 12,
+    color: "#7E6D66",
+  },
+
+  priceValue: {
+    fontFamily: "Outfit",
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#28221B",
+  },
+
+  priceValueDim: {
+    fontFamily: "Outfit",
+    fontSize: 12,
+    color: "#28221B",
+  },
+
   editBtn: {
     height: 38,
     backgroundColor: "#FF9E6D",

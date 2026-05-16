@@ -9,9 +9,12 @@ import {
   View,
 } from "react-native";
 import { useSafeBack } from "@/hooks/use-safe-back";
+import { useUser } from "@/contexts/user-context";
 
 export default function NotificationsScreen() {
   const safeBack = useSafeBack();
+  const { role } = useUser();
+  const isAdmin = role === "Admin";
   const [push, setPush] = useState(true);
   const [email, setEmail] = useState(true);
   const [reminders, setReminders] = useState(true);
@@ -40,12 +43,14 @@ export default function NotificationsScreen() {
           value={email}
           onValueChange={setEmail}
         />
-        <Toggle
-          label="Lesson reminders"
-          description="Get a heads-up 30 minutes before"
-          value={reminders}
-          onValueChange={setReminders}
-        />
+        {isAdmin ? null : (
+          <Toggle
+            label="Lesson reminders"
+            description="Get a heads-up 30 minutes before"
+            value={reminders}
+            onValueChange={setReminders}
+          />
+        )}
         <Toggle
           label="Promotions"
           description="Occasional offers and tips"

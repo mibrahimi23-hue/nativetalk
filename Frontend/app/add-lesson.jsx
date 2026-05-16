@@ -1,9 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,13 +13,17 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import * as DocumentPicker from "expo-document-picker";
 import { useUser } from "@/contexts/user-context";
 import { useSafeBack } from "@/hooks/use-safe-back";
+import { deleteMaterial, listMaterials, uploadMaterial } from "@/services/materials";
+import { createLesson } from "@/services/lessons";
+import { findLanguageById, findLanguageByName } from "@/constants/languages";
 
 const LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
 
 export default function AddLesson() {
-  const { addLesson, materials } = useUser();
+  const { addLesson, profile } = useUser();
   const safeBack = useSafeBack();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -26,13 +31,149 @@ export default function AddLesson() {
   const [pickedMaterials, setPickedMaterials] = useState([]);
   const [picker, setPicker] = useState(null); // 'level' | 'materials' | null
 
+  // Materials picker is now backed by the real `/materials/` endpoint so the
+  // tutor sees everything they've uploaded across sessions. The in-memory
+  // `useUser().materials` was only the local React state for one screen.
+  const [materials, setMaterials] = useState([]);
+  const [loadingMaterials, setLoadingMaterials] = useState(false);
+  const [newMaterialTitle, setNewMaterialTitle] = useState("");
+  const [newMaterialFile, setNewMaterialFile] = useState(null);
+  const [showNewMaterial, setShowNewMaterial] = useState(false);
+  const [uploadingMaterial, setUploadingMaterial] = useState(false);
+  const [deletingMaterialId, setDeletingMaterialId] = useState(null);
+
+  const reloadMaterials = useCallback(async () => {
+    setLoadingMaterials(true);
+    try {
+      const lang =
+        findLanguageById(profile.languageId) ||
+        findLanguageByName(profile.language);
+      const data = await listMaterials({
+        language_id: lang?.id,
+        level: level || undefined,
+      });
+      setMaterials(Array.isArray(data) ? data : []);
+    } catch {
+      setMaterials([]);
+    } finally {
+      setLoadingMaterials(false);
+    }
+  }, [profile.languageId, profile.language, level]);
+
+  useEffect(() => {
+    reloadMaterials();
+  }, [reloadMaterials]);
+
   const toggleMaterial = (id) => {
     setPickedMaterials((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
   };
 
-  const handleContinue = () => {
+  const handleDeleteMaterial = (mat) => {
+    if (deletingMaterialId) return;
+    const performDelete = async () => {
+      setDeletingMaterialId(mat.id);
+      try {
+        await deleteMaterial(mat.id);
+        // Drop the picked-id too if it was selected, otherwise the lesson
+        // would carry a reference to a row that no longer exists.
+        setPickedMaterials((prev) => prev.filter((id) => id !== mat.id));
+        await reloadMaterials();
+      } catch (e) {
+        Alert.alert(
+          "Could not delete",
+          e?.message || "The material could not be deleted. Please try again.",
+        );
+      } finally {
+        setDeletingMaterialId(null);
+      }
+    };
+
+    if (Platform.OS === "web") {
+      const ok = typeof window !== "undefined" && window.confirm
+        ? window.confirm(`Delete "${mat.title}"? This cannot be undone.`)
+        : true;
+      if (ok) performDelete();
+      return;
+    }
+    Alert.alert(
+      "Delete material",
+      `Delete "${mat.title}"? This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: performDelete },
+      ],
+    );
+  };
+
+  const pickNewMaterialFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["application/pdf", "image/*", "audio/mpeg"],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (asset) setNewMaterialFile(asset);
+    } catch (e) {
+      Alert.alert("Could not pick file", e?.message || "Please try again.");
+    }
+  };
+
+  const saveNewMaterial = async () => {
+    if (uploadingMaterial) return;
+    if (!newMaterialTitle.trim()) {
+      Alert.alert("Title required", "Enter a title for the new material.");
+      return;
+    }
+    if (!newMaterialFile) {
+      Alert.alert("Document required", "Attach a document first.");
+      return;
+    }
+    const lang =
+      findLanguageById(profile.languageId) ||
+      findLanguageByName(profile.language);
+    if (!lang?.id) {
+      Alert.alert(
+        "Language unknown",
+        "Set your teaching language on your profile before adding materials.",
+      );
+      return;
+    }
+    setUploadingMaterial(true);
+    try {
+      const isAudio =
+        (newMaterialFile.mimeType || "").startsWith("audio/") ||
+        /\.(mp3|m4a|wav)$/i.test(newMaterialFile.name || "");
+      const created = await uploadMaterial({
+        title: newMaterialTitle.trim(),
+        type: isAudio ? "audio_lesson" : "grammar_guide",
+        description: "",
+        language_id: lang.id,
+        level: level || "A1",
+        asset: newMaterialFile,
+      });
+      // Refresh and pre-select the newly uploaded material so the user can
+      // continue building the lesson without having to find it again.
+      await reloadMaterials();
+      if (created?.id) {
+        setPickedMaterials((prev) =>
+          prev.includes(created.id) ? prev : [...prev, created.id],
+        );
+      }
+      setNewMaterialTitle("");
+      setNewMaterialFile(null);
+      setShowNewMaterial(false);
+    } catch (e) {
+      Alert.alert("Upload failed", e?.message || "Please try again.");
+    } finally {
+      setUploadingMaterial(false);
+    }
+  };
+
+  const handleContinue = async () => {
     if (!title.trim()) {
       Alert.alert("Title required", "Please enter a title for the lesson.");
       return;
@@ -41,16 +182,38 @@ export default function AddLesson() {
       Alert.alert("Level required", "Please pick a level.");
       return;
     }
-    addLesson({
-      title: title.trim(),
-      description: description.trim(),
-      level,
-      materialIds: pickedMaterials,
-      status: "upcoming",
-      date: "TBD",
-      time: "",
-    });
-    safeBack("/language-lessons");
+    const lang =
+      findLanguageById(profile.languageId) ||
+      findLanguageByName(profile.language);
+    if (!lang?.id) {
+      Alert.alert(
+        "Language unknown",
+        "Set your teaching language on your profile before adding lessons.",
+      );
+      return;
+    }
+    try {
+      const created = await createLesson({
+        title: title.trim(),
+        description: description.trim(),
+        level,
+        language_id: lang.id,
+        material_ids: pickedMaterials,
+      });
+      addLesson({
+        id: created?.id,
+        title: created?.title || title.trim(),
+        description: created?.description || description.trim(),
+        level,
+        materialIds: pickedMaterials,
+        status: "upcoming",
+        date: "TBD",
+        time: "",
+      });
+      safeBack("/language-lessons");
+    } catch (e) {
+      Alert.alert("Could not add lesson", e?.message || "Please try again.");
+    }
   };
 
   return (
@@ -160,31 +323,96 @@ export default function AddLesson() {
                       </TouchableOpacity>
                     );
                   })
-                : materials.map((m) => {
-                    const selected = pickedMaterials.includes(m.id);
-                    return (
-                      <TouchableOpacity
-                        key={m.id}
-                        style={[
-                          styles.modalRow,
-                          selected && styles.modalRowSelected,
-                        ]}
-                        onPress={() => toggleMaterial(m.id)}
-                      >
+                : (
+                    <>
+                      {loadingMaterials && (
+                        <ActivityIndicator
+                          color="#FF9E6D"
+                          style={{ marginVertical: 10 }}
+                        />
+                      )}
+
+                      {!loadingMaterials && materials.length === 0 && (
                         <Text
-                          style={[
-                            styles.modalRowText,
-                            selected && styles.modalRowTextSelected,
-                          ]}
+                          style={{
+                            fontFamily: "Outfit",
+                            fontSize: 13,
+                            color: "#A89080",
+                            textAlign: "center",
+                            paddingVertical: 14,
+                          }}
                         >
-                          {m.title}
+                          You have not uploaded any materials yet.
                         </Text>
-                        {selected && (
-                          <Ionicons name="checkmark" size={18} color="#FF9E6D" />
-                        )}
+                      )}
+
+                      {materials.map((m) => {
+                        const selected = pickedMaterials.includes(m.id);
+                        const isDeleting = deletingMaterialId === m.id;
+                        return (
+                          <View
+                            key={m.id}
+                            style={[
+                              styles.modalRow,
+                              selected && styles.modalRowSelected,
+                            ]}
+                          >
+                            <TouchableOpacity
+                              style={{ flex: 1, paddingRight: 8 }}
+                              onPress={() => toggleMaterial(m.id)}
+                              disabled={isDeleting}
+                            >
+                              <Text
+                                style={[
+                                  styles.modalRowText,
+                                  selected && styles.modalRowTextSelected,
+                                ]}
+                              >
+                                {m.title}
+                              </Text>
+                            </TouchableOpacity>
+                            <View style={styles.rowIcons}>
+                              {selected && (
+                                <Ionicons
+                                  name="checkmark"
+                                  size={18}
+                                  color="#FF9E6D"
+                                />
+                              )}
+                              <TouchableOpacity
+                                style={styles.rowDeleteBtn}
+                                onPress={() => handleDeleteMaterial(m)}
+                                disabled={isDeleting}
+                              >
+                                {isDeleting ? (
+                                  <ActivityIndicator size="small" color="#DD8153" />
+                                ) : (
+                                  <Ionicons
+                                    name="trash-outline"
+                                    size={16}
+                                    color="#DD8153"
+                                  />
+                                )}
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        );
+                      })}
+
+                      <TouchableOpacity
+                        style={styles.addNewBtn}
+                        onPress={() => {
+                          setPicker(null);
+                          setShowNewMaterial(true);
+                        }}
+                      >
+                        <Ionicons name="add" size={18} color="#FFFBFA" />
+                        <Text style={styles.addNewBtnText}>
+                          Add new material
+                        </Text>
                       </TouchableOpacity>
-                    );
-                  })}
+                    </>
+                  )}
             </ScrollView>
             {picker === "materials" && (
               <TouchableOpacity
@@ -194,6 +422,73 @@ export default function AddLesson() {
                 <Text style={styles.modalCloseText}>Done</Text>
               </TouchableOpacity>
             )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showNewMaterial}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowNewMaterial(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setShowNewMaterial(false)}
+        >
+          <Pressable style={styles.modalSheet} onPress={() => {}}>
+            <Text style={styles.modalTitle}>Add Material</Text>
+
+            <Text style={styles.label}>Title</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. Chapter 1 Vocabulary"
+              placeholderTextColor="#8D7C74"
+              value={newMaterialTitle}
+              onChangeText={setNewMaterialTitle}
+            />
+
+            <Text style={styles.label}>Document</Text>
+            <TouchableOpacity
+              style={styles.uploadBox}
+              onPress={pickNewMaterialFile}
+            >
+              <Ionicons
+                name={newMaterialFile ? "document-attach" : "cloud-upload-outline"}
+                size={20}
+                color="#FF9E6D"
+              />
+              <Text style={styles.uploadText}>
+                {newMaterialFile
+                  ? newMaterialFile.name
+                  : "Tap to attach a document"}
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.modalBtnGhost]}
+                onPress={() => setShowNewMaterial(false)}
+                disabled={uploadingMaterial}
+              >
+                <Text style={styles.modalBtnGhostText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.modalBtn,
+                  styles.modalBtnPrimary,
+                  uploadingMaterial && { opacity: 0.7 },
+                ]}
+                onPress={saveNewMaterial}
+                disabled={uploadingMaterial}
+              >
+                {uploadingMaterial ? (
+                  <ActivityIndicator color="#FFFBFA" />
+                ) : (
+                  <Text style={styles.modalBtnPrimaryText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -352,6 +647,21 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
+  rowIcons: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  rowDeleteBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#FFF1E8",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
   modalCloseBtn: {
     marginTop: 12,
     backgroundColor: "#FF9E6D",
@@ -365,5 +675,71 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#FFFBFA",
     fontWeight: "600",
+  },
+
+  addNewBtn: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "#FF9E6D",
+    borderRadius: 22,
+    paddingVertical: 12,
+  },
+
+  addNewBtnText: {
+    fontFamily: "Outfit",
+    fontSize: 13,
+    color: "#FFFBFA",
+    fontWeight: "700",
+  },
+
+  uploadBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#F3EDEA",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    marginBottom: 18,
+  },
+  uploadText: {
+    fontFamily: "Outfit",
+    fontSize: 13,
+    color: "#28221B",
+    flex: 1,
+  },
+
+  modalActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 10,
+  },
+  modalBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalBtnGhost: {
+    backgroundColor: "#F3EDEA",
+  },
+  modalBtnGhostText: {
+    fontFamily: "Outfit",
+    fontSize: 13,
+    color: "#28221B",
+    fontWeight: "600",
+  },
+  modalBtnPrimary: {
+    backgroundColor: "#FF9E6D",
+  },
+  modalBtnPrimaryText: {
+    fontFamily: "Outfit",
+    fontSize: 14,
+    color: "#FFFBFA",
+    fontWeight: "700",
   },
 });

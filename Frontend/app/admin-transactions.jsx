@@ -1,45 +1,69 @@
-import { Ionicons } from "@expo/vector-icons";
+﻿import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { safeBack } from "@/hooks/use-safe-back";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
+import { listAdminTransactions } from "@/services/admin";
 
-const transactions = [
-  {
-    id: 1,
-    time: "1 day ago · 13:00",
-    title: "Spanish Lesson",
-    description: "Full Payment by Elara Voss to Cecilia Starling, $210",
-  },
-  {
-    id: 2,
-    time: "5 days ago · 10:00",
-    title: "German Lesson",
-    description: "50% payment by Kai Rivers to Mia Stone, $75",
-  },
-  {
-    id: 3,
-    time: "1 week ago · 16:45",
-    title: "Japanese Lesson",
-    description: "Hourly payment by Noah Lake to Ava Reed, $10/hr",
-  },
-];
+function relativeTime(dateString) {
+  if (!dateString) return "";
+  const d = new Date(dateString);
+  if (Number.isNaN(d.getTime())) return "";
+  const diff = Date.now() - d.getTime();
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (days <= 0) return `Today · ${time}`;
+  if (days === 1) return `1 day ago · ${time}`;
+  if (days < 7) return `${days} days ago · ${time}`;
+  const weeks = Math.floor(days / 7);
+  return weeks === 1 ? `1 week ago · ${time}` : `${weeks} weeks ago · ${time}`;
+}
+
+function planLabel(plan) {
+  if (plan === "hour_by_hour") return "Hourly payment";
+  if (plan === "50_50") return "50% payment";
+  if (plan === "80_20") return "80% payment";
+  return "Payment";
+}
 
 export default function AdminTransactions() {
   const [search, setSearch] = useState("");
+  const [transactions, setTransactions] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = transactions.filter(
-    (item) =>
-      item.title.toLowerCase().includes(search.toLowerCase()) ||
-      item.description.toLowerCase().includes(search.toLowerCase()),
-  );
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await listAdminTransactions({ limit: 100 });
+      setTransactions(Array.isArray(data) ? data : []);
+    } catch {
+      setTransactions([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const filtered = transactions.filter((item) => {
+    const q = search.toLowerCase();
+    return (
+      !q ||
+      (item.teacher_name || "").toLowerCase().includes(q) ||
+      (item.student_name || "").toLowerCase().includes(q) ||
+      (item.level || "").toLowerCase().includes(q)
+    );
+  });
 
   return (
     <View style={styles.container}>
@@ -75,25 +99,46 @@ export default function AdminTransactions() {
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false}>
-        {filtered.map((item) => (
-          <View key={item.id} style={styles.transactionRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.time}>{item.time}</Text>
-              <Text style={styles.transactionTitle}>{item.title}</Text>
-              <Text style={styles.description}>{item.description}</Text>
-            </View>
-
-            <TouchableOpacity
-              style={styles.playBtn}
-              onPress={() => router.push("/admin-transaction-details")}
-            >
-              <Ionicons name="play" size={14} color="#28221B" />
-            </TouchableOpacity>
-          </View>
-        ))}
-
-        {filtered.length === 0 && (
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 30 }} />
+        ) : filtered.length === 0 ? (
           <Text style={styles.empty}>No transactions found</Text>
+        ) : (
+          filtered.map((item) => {
+            const description = [
+              planLabel(item.payment_plan),
+              item.student_name ? `by ${item.student_name}` : null,
+              item.teacher_name ? `to ${item.teacher_name}` : null,
+              `€${Number(item.amount || 0).toFixed(2)}`,
+            ]
+              .filter(Boolean)
+              .join(" ");
+            return (
+              <View key={item.id} style={styles.transactionRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.time}>
+                    {relativeTime(item.paid_at || item.created_at)}
+                  </Text>
+                  <Text style={styles.transactionTitle}>
+                    {item.level ? `${item.level} Lesson` : "Lesson"}
+                  </Text>
+                  <Text style={styles.description}>{description}</Text>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.playBtn}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/admin-transaction-details",
+                      params: { transactionId: item.id },
+                    })
+                  }
+                >
+                  <Ionicons name="play" size={14} color="#28221B" />
+                </TouchableOpacity>
+              </View>
+            );
+          })
         )}
       </ScrollView>
 
@@ -185,7 +230,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "#EEE",
+    borderBottomColor: "#EFE6E1",
   },
 
   time: {
@@ -214,7 +259,7 @@ const styles = StyleSheet.create({
     height: 28,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#EEE",
+    borderColor: "#EFE6E1",
     justifyContent: "center",
     alignItems: "center",
     marginLeft: 12,

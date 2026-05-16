@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useState } from "react";
+import { router, useLocalSearchParams } from "expo-router";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Modal,
@@ -12,66 +12,147 @@ import {
   View,
 } from "react-native";
 import { safeBack } from "@/hooks/use-safe-back";
+import { useUser } from "@/contexts/user-context";
+import { cancelSession, listMySessions } from "@/services/sessions";
+import { markTeacherNoShow } from "@/services/suspension";
+import { requestReschedule } from "@/services/reschedule";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_OFFSET = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 };
 
 const TIME_SLOTS = [
-  "9:00 AM to 11:00 AM",
-  "11:00 AM to 1:00 PM",
-  "1:00 PM to 3:00 PM",
-  "3:00 PM to 5:00 PM",
-  "5:00 PM to 7:00 PM",
-  "7:00 PM to 9:00 PM",
+  { label: "9:00 AM to 11:00 AM", hour: 9 },
+  { label: "11:00 AM to 1:00 PM", hour: 11 },
+  { label: "1:00 PM to 3:00 PM", hour: 13 },
+  { label: "3:00 PM to 5:00 PM", hour: 15 },
+  { label: "5:00 PM to 7:00 PM", hour: 17 },
+  { label: "7:00 PM to 9:00 PM", hour: 19 },
 ];
 
+function nextDateForDay(targetDay, hour) {
+  // Picker is relative to *today's* date: picking the current weekday gives
+  // today's date when the chosen hour is still in the future, otherwise the
+  // same weekday next week. Other weekdays land on the next occurrence.
+  const now = new Date();
+  const target = DAY_OFFSET[targetDay];
+  let dayDiff = ((target - now.getDay()) + 7) % 7;
+  if (dayDiff === 0) {
+    const todayAtHour = new Date(now);
+    todayAtHour.setHours(hour, 0, 0, 0);
+    if (todayAtHour <= now) dayDiff = 7;
+  }
+  const d = new Date(now);
+  d.setDate(now.getDate() + dayDiff);
+  d.setHours(hour, 0, 0, 0);
+  return d;
+}
+
 export default function TutorDidntJoin() {
+  const { sessionId } = useLocalSearchParams();
+  const { user, profile } = useUser();
   const [day, setDay] = useState(null);
-  const [time, setTime] = useState(null);
+  const [timeSlot, setTimeSlot] = useState(null);
   const [picker, setPicker] = useState(null);
   const [savedSlot, setSavedSlot] = useState(null);
+  const [session, setSession] = useState(null);
+  const [busy, setBusy] = useState(false);
 
-  const options = picker === "day" ? DAYS : picker === "time" ? TIME_SLOTS : [];
+  useEffect(() => {
+    (async () => {
+      try {
+        const sessions = await listMySessions();
+        const found = sessionId
+          ? sessions.find((s) => String(s.id) === String(sessionId))
+          : sessions.filter((s) => s.status === "confirmed")[0];
+        setSession(found || null);
+      } catch {
+        setSession(null);
+      }
+    })();
+  }, [sessionId]);
+
+  const options = picker === "day" ? DAYS : picker === "time" ? TIME_SLOTS.map((t) => t.label) : [];
 
   const choose = (val) => {
     if (picker === "day") setDay(val);
-    if (picker === "time") setTime(val);
+    if (picker === "time") {
+      const found = TIME_SLOTS.find((t) => t.label === val);
+      if (found) setTimeSlot(found);
+    }
     setPicker(null);
   };
 
   const handleSaveAvailability = () => {
-    if (!day || !time) {
+    if (!day || !timeSlot) {
       Alert.alert(
         "Pick a day and time",
         "Please select both a day and a time slot.",
       );
       return;
     }
-    setSavedSlot({ day, time });
+    setSavedSlot({ day, time: timeSlot.label, when: nextDateForDay(day, timeSlot.hour) });
     setDay(null);
-    setTime(null);
+    setTimeSlot(null);
   };
 
-  const handleRefund = () => {
-    Alert.alert(
-      "Refund requested",
-      "Your refund request has been submitted. You'll be notified once it's processed.",
-      [{ text: "OK", onPress: () => router.replace("/student-dashboard") }],
-    );
-  };
-
-  const handleConfirmReschedule = () => {
+  const handleConfirmReschedule = async () => {
     if (!savedSlot) {
-      Alert.alert(
-        "No slot saved",
-        "Save an availability slot first or request a refund.",
-      );
+      Alert.alert("No slot saved", "Save an availability slot first or request a refund.");
       return;
     }
-    Alert.alert(
-      "Rescheduled",
-      `New slot requested: ${savedSlot.day} - ${savedSlot.time}.`,
-      [{ text: "OK", onPress: () => router.replace("/student-dashboard") }],
-    );
+    if (!session) {
+      Alert.alert("No session selected.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await markTeacherNoShow({
+        teacher_id: session.teacher_id,
+        session_id: session.id,
+        notified: false,
+      }).catch(() => null);
+      await requestReschedule({
+        session_id: session.id,
+        new_time: savedSlot.when.toISOString(),
+        reason: "Tutor didn't join — student rescheduling",
+        requested_by: user?.id,
+        user_timezone: profile.timezone || user?.timezone,
+      });
+      Alert.alert(
+        "Rescheduled",
+        `New slot requested: ${savedSlot.day} - ${savedSlot.time}.`,
+        [{ text: "OK", onPress: () => router.replace("/student-dashboard") }],
+      );
+    } catch (e) {
+      Alert.alert("Could not reschedule", e.message || "Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRefund = async () => {
+    if (!session) {
+      router.replace("/student-dashboard");
+      return;
+    }
+    setBusy(true);
+    try {
+      await markTeacherNoShow({
+        teacher_id: session.teacher_id,
+        session_id: session.id,
+        notified: false,
+      }).catch(() => null);
+      await cancelSession(session.id);
+      Alert.alert(
+        "Refund requested",
+        "The session was cancelled and a refund request has been logged.",
+        [{ text: "OK", onPress: () => router.replace("/student-dashboard") }],
+      );
+    } catch (e) {
+      Alert.alert("Could not request refund", e.message || "Please try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -108,15 +189,18 @@ export default function TutorDidntJoin() {
           onPress={() => setPicker("time")}
           activeOpacity={0.7}
         >
-          <Text style={[styles.placeholder, time && styles.value]}>
-            {time || "Select Time"}
+          <Text style={[styles.placeholder, timeSlot && styles.value]}>
+            {timeSlot?.label || "Select Time"}
           </Text>
           <Ionicons name="chevron-down" size={18} color="#7E6D66" />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.saveBtn, (!day || !time) && styles.saveBtnDisabled]}
-          disabled={!day || !time}
+          style={[
+            styles.saveBtn,
+            (!day || !timeSlot) && styles.saveBtnDisabled,
+          ]}
+          disabled={!day || !timeSlot}
           onPress={handleSaveAvailability}
         >
           <Text style={styles.saveText}>Save Availability +</Text>
@@ -135,7 +219,8 @@ export default function TutorDidntJoin() {
 
         {savedSlot && (
           <TouchableOpacity
-            style={styles.confirmBtn}
+            style={[styles.confirmBtn, busy && { opacity: 0.6 }]}
+            disabled={busy}
             onPress={handleConfirmReschedule}
           >
             <Text style={styles.confirmText}>Confirm reschedule</Text>
@@ -144,7 +229,11 @@ export default function TutorDidntJoin() {
 
         <Text style={[styles.label, { marginTop: 24 }]}>Or Refund Session</Text>
 
-        <TouchableOpacity style={styles.refundBtn} onPress={handleRefund}>
+        <TouchableOpacity
+          style={[styles.refundBtn, busy && { opacity: 0.6 }]}
+          disabled={busy}
+          onPress={handleRefund}
+        >
           <Text style={styles.refundText}>Refund</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -164,7 +253,7 @@ export default function TutorDidntJoin() {
               {options.map((opt) => {
                 const selected =
                   (picker === "day" && opt === day) ||
-                  (picker === "time" && opt === time);
+                  (picker === "time" && opt === timeSlot?.label);
                 return (
                   <TouchableOpacity
                     key={opt}
@@ -327,7 +416,7 @@ const styles = StyleSheet.create({
 
   refundBtn: {
     height: 44,
-    backgroundColor: "#E9B89F",
+    backgroundColor: "#DD8153",
     borderRadius: 22,
     justifyContent: "center",
     alignItems: "center",

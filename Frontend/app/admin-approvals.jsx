@@ -1,37 +1,55 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { safeBack } from "@/hooks/use-safe-back";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-    Alert,
-    Image,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
-
-const initialTutors = [
-  {
-    id: 1,
-    name: "Elara Voss",
-    bio: "Experienced in teaching Spanish and French.",
-    image: "https://images.unsplash.com/photo-1544005313-94ddf0286df2",
-  },
-  {
-    id: 2,
-    name: "Kaiya Ryn",
-    bio: "Native English speaker with a focus on business English.",
-    image: "https://images.unsplash.com/photo-1494790108377-be9c29b29330",
-  },
-];
+import { Avatar } from "@/components/avatar";
+import { approveTutor, listPendingTutors, rejectTutor } from "@/services/admin";
+import { buildMediaUrl } from "@/services/api";
 
 export default function AdminApprovals() {
-  const [tutors, setTutors] = useState(initialTutors);
+  const [tutors, setTutors] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
 
-  const removeTutor = (id, action) => {
-    setTutors(tutors.filter((tutor) => tutor.id !== id));
-    Alert.alert(action, `Tutor has been ${action.toLowerCase()}.`);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await listPendingTutors();
+      setTutors(Array.isArray(data) ? data : []);
+    } catch {
+      setTutors([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleAction = async (teacherId, action) => {
+    setBusyId(teacherId);
+    try {
+      if (action === "approve") {
+        await approveTutor(teacherId);
+      } else {
+        await rejectTutor(teacherId);
+      }
+      setTutors((prev) => prev.filter((t) => t.teacher_id !== teacherId));
+    } catch (e) {
+      Alert.alert("Action failed", e.message || "Please try again.");
+    } finally {
+      setBusyId(null);
+    }
   };
 
   return (
@@ -45,41 +63,74 @@ export default function AdminApprovals() {
         <View style={{ width: 30 }} />
       </View>
 
-      {tutors.map((tutor) => (
-        <View key={tutor.id} style={styles.card}>
-          <Image source={{ uri: tutor.image }} style={styles.avatar} />
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: 90 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 40 }} />
+        ) : tutors.length === 0 ? (
+          <Text style={styles.emptyText}>No pending tutor accounts</Text>
+        ) : (
+          tutors.map((tutor) => {
+            const photo = buildMediaUrl(tutor.profile_photo);
+            const busy = busyId === tutor.teacher_id;
+            return (
+              <View key={tutor.teacher_id} style={styles.card}>
+                <View style={styles.avatarWrap}>
+                  <Avatar
+                    name={tutor.full_name}
+                    uri={photo}
+                    seed={tutor.email || tutor.teacher_id || tutor.full_name}
+                    size={92}
+                  />
+                </View>
 
-          <Text style={styles.name}>{tutor.name}</Text>
-          <Text style={styles.bio}>{tutor.bio}</Text>
+                <Text style={styles.name}>{tutor.full_name}</Text>
+                <Text style={styles.bio}>
+                  {tutor.bio || `Max level ${tutor.max_level} · ${
+                    tutor.is_certified ? "Certified" : "Not certified"
+                  }${tutor.has_experience ? " · Experienced" : ""}`}
+                </Text>
 
-          <View style={styles.btnRow}>
-            <TouchableOpacity
-              style={styles.approveBtn}
-              onPress={() => removeTutor(tutor.id, "Approved")}
-            >
-              <Text style={styles.whiteText}>Approve</Text>
-            </TouchableOpacity>
+                <View style={styles.btnRow}>
+                  <TouchableOpacity
+                    style={[styles.approveBtn, busy && { opacity: 0.6 }]}
+                    disabled={busy}
+                    onPress={() => handleAction(tutor.teacher_id, "approve")}
+                  >
+                    {busy ? (
+                      <ActivityIndicator color="#FFFBFA" />
+                    ) : (
+                      <Text style={styles.whiteText}>Approve</Text>
+                    )}
+                  </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.rejectBtn}
-              onPress={() => removeTutor(tutor.id, "Rejected")}
-            >
-              <Text style={styles.darkText}>Reject</Text>
-            </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.rejectBtn}
+                    disabled={busy}
+                    onPress={() => handleAction(tutor.teacher_id, "reject")}
+                  >
+                    <Text style={styles.darkText}>Reject</Text>
+                  </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.viewBtn}
-              onPress={() => router.push("/admin-tutor-profile")}
-            >
-              <Text style={styles.darkText}>View</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ))}
-
-      {tutors.length === 0 && (
-        <Text style={styles.emptyText}>No pending tutor accounts</Text>
-      )}
+                  <TouchableOpacity
+                    style={styles.viewBtn}
+                    onPress={() =>
+                      router.push({
+                        pathname: "/admin-tutor-profile",
+                        params: { teacherId: tutor.teacher_id },
+                      })
+                    }
+                  >
+                    <Text style={styles.darkText}>View</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          })
+        )}
+      </ScrollView>
 
       <View style={styles.bottomNav}>
         <TouchableOpacity onPress={() => router.push("/admin-dashboard")}>
@@ -138,10 +189,7 @@ const styles = StyleSheet.create({
     marginBottom: 34,
   },
 
-  avatar: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
+  avatarWrap: {
     marginBottom: 12,
   },
 

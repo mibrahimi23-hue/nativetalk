@@ -352,9 +352,7 @@ def upgrade() -> None:
     op.drop_column('sessions', 'notes')
     op.drop_column('sessions', 'updated_at')
     op.add_column('student_languages', sa.Column('started_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=True))
-    op.execute("ALTER TABLE student_languages ALTER COLUMN id DROP DEFAULT")
-    op.execute("ALTER TABLE student_languages ALTER COLUMN id TYPE UUID USING id::text::uuid")
-    op.execute("ALTER TABLE student_languages ALTER COLUMN id SET DEFAULT gen_random_uuid()")
+    op.execute("ALTER TABLE student_languages ALTER COLUMN id TYPE UUID USING (gen_random_uuid())")
     op.alter_column('student_languages', 'level',
                existing_type=sa.VARCHAR(length=20),
                type_=sa.String(length=3),

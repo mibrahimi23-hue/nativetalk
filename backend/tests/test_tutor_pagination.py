@@ -28,7 +28,7 @@ from app.main import app
 from app.db import base as _base_models  # noqa: F401 — registers all models in mapper
 from app.models.language import Language
 from app.models.tutor import Teacher
-from app.models.user import User
+from app.models.users import User
 
 # Unique language IDs per test run to avoid collisions with production data
 _LANG1 = 900 + abs(hash(str(uuid.uuid4())[:4])) % 50

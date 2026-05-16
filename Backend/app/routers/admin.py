@@ -6,7 +6,7 @@ from models.users import User
 from models.teacher import Teacher
 from models.student import Student
 from models.session import Session as BookingSession
-from models.payment import CoursePayment, Payment
+from models.payment import CoursePayment, Payment, PayPalTransaction
 from models.review import ReviewFlag
 from models.suspension import Suspension
 from datetime import datetime, timezone, timedelta
@@ -31,7 +31,12 @@ def get_admin_dashboard(
         BookingSession.status == "pending"
     ).count()
 
-    total_revenue   = db.query(func.sum(Payment.amount)).scalar() or 0
+    total_revenue = (
+        db.query(func.sum(PayPalTransaction.amount))
+        .filter(PayPalTransaction.paypal_status == "completed")
+        .scalar()
+        or 0
+    )
     platform_earned = db.query(func.sum(Payment.platform_fee)).scalar() or 0
     teacher_payouts = db.query(func.sum(Payment.teacher_payout)).scalar() or 0
 

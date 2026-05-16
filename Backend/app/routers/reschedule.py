@@ -101,15 +101,27 @@ def request_reschedule(
             detail="Teacher already has a session at this time!"
         )
 
+    # Apply the new time immediately so both dashboards reflect the move
+    # without a separate accept step.
     reschedule = RescheduleRequest(
         id=uuid.uuid4(),
         session_id=data.session_id,
         requested_by=data.requested_by,
         new_time=new_time_utc,
-        status="pending",
-        reason=data.reason
+        status="accepted",
+        reason=data.reason,
+        resolved_at=datetime.now(timezone.utc),
     )
     db.add(reschedule)
+
+    session.scheduled_at = new_time_utc
+    if session.status == "no_show":
+        session.status = "confirmed"
+    session.daily_room_name = None
+    session.daily_room_url = None
+    session.videocall_url = None
+    session.rescheduled = False
+
     if user.role == "student":
         student = db.query(Student).filter(
             Student.user_id == data.requested_by
@@ -117,26 +129,26 @@ def request_reschedule(
         if student:
             student.reschedule_count += 1
 
-    session.rescheduled = True
     db.commit()
     db.refresh(reschedule)
+    db.refresh(session)
 
     student_obj = db.query(Student).filter(
         Student.id == session.student_id
     ).first()
 
     return {
-        "message": "Request for reschedule has been submitted!",
+        "message": "Session rescheduled.",
         "reschedule": {
             "id":               str(reschedule.id),
             "session_id":       data.session_id,
             "requested_by":     user.role,
             "new_time_utc":     str(new_time_utc),
-            "status":           "pending",
+            "status":           "accepted",
             "reason":           data.reason,
             "reschedule_count": student_obj.reschedule_count if student_obj else 0,
-            "remaining":        5 - student_obj.reschedule_count if student_obj else 5
-        }
+            "remaining":        5 - student_obj.reschedule_count if student_obj else 5,
+        },
     }
 
 

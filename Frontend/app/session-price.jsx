@@ -3,6 +3,8 @@ import { router, useLocalSearchParams } from "expo-router";
 import { safeBack } from "@/hooks/use-safe-back";
 import { useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   PanResponder,
   StyleSheet,
   Text,
@@ -10,6 +12,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { updateTutorProfile } from "@/services/tutors";
+import { useUser } from "@/contexts/user-context";
 
 const KNOB = 24;
 
@@ -24,12 +28,14 @@ const PRICE_BY_LEVEL = {
 
 export default function SessionPrice() {
   const { level, plan } = useLocalSearchParams();
+  const { user } = useUser();
   const effectiveLevel = PRICE_BY_LEVEL[level] ? level : "A2";
   const { min: MIN_PRICE, max: MAX_PRICE } = PRICE_BY_LEVEL[effectiveLevel];
 
   const [hours, setHours] = useState("");
   const [trackWidth, setTrackWidth] = useState(0);
   const [price, setPrice] = useState((MIN_PRICE + MAX_PRICE) / 2);
+  const [submitting, setSubmitting] = useState(false);
   const startXRef = useRef(0);
 
   const usableWidth = Math.max(trackWidth - KNOB, 1);
@@ -130,22 +136,36 @@ export default function SessionPrice() {
       </View>
 
       <TouchableOpacity
-        style={[styles.btn, !canContinue && styles.btnDisabled]}
-        disabled={!canContinue}
-        onPress={() =>
-          router.push({
-            pathname: "/application-submitted",
-            params: {
-              hours: parsedHours,
-              price: price.toFixed(2),
-              total: total.toFixed(2),
-              level: effectiveLevel,
-              plan,
-            },
-          })
-        }
+        style={[styles.btn, (!canContinue || submitting) && styles.btnDisabled]}
+        disabled={!canContinue || submitting}
+        onPress={async () => {
+          setSubmitting(true);
+          try {
+            if (user?.teacher_id) {
+              await updateTutorProfile({ hourly_rate: Math.round(price) });
+            }
+            router.push({
+              pathname: "/application-submitted",
+              params: {
+                hours: parsedHours,
+                price: price.toFixed(2),
+                total: total.toFixed(2),
+                level: effectiveLevel,
+                plan,
+              },
+            });
+          } catch (e) {
+            Alert.alert("Could not save price", e.message || "Please try again.");
+          } finally {
+            setSubmitting(false);
+          }
+        }}
       >
-        <Text style={styles.btnText}>Continue</Text>
+        {submitting ? (
+          <ActivityIndicator color="#FFFBFA" />
+        ) : (
+          <Text style={styles.btnText}>Continue</Text>
+        )}
       </TouchableOpacity>
     </View>
   );

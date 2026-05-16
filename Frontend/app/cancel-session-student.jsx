@@ -1,7 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useState } from "react";
+import { router, useLocalSearchParams } from "expo-router";
+import { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Modal,
   Pressable,
@@ -12,52 +13,129 @@ import {
   View,
 } from "react-native";
 import { useSafeBack } from "@/hooks/use-safe-back";
+import { useUser } from "@/contexts/user-context";
+import { cancelSession, listMySessions } from "@/services/sessions";
+import { requestReschedule } from "@/services/reschedule";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_OFFSET = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 };
 
 const TIME_SLOTS = [
-  "9:00 AM to 11:00 AM",
-  "11:00 AM to 1:00 PM",
-  "1:00 PM to 3:00 PM",
-  "3:00 PM to 5:00 PM",
-  "5:00 PM to 7:00 PM",
-  "7:00 PM to 9:00 PM",
+  { label: "9:00 AM to 11:00 AM", hour: 9 },
+  { label: "11:00 AM to 1:00 PM", hour: 11 },
+  { label: "1:00 PM to 3:00 PM", hour: 13 },
+  { label: "3:00 PM to 5:00 PM", hour: 15 },
+  { label: "5:00 PM to 7:00 PM", hour: 17 },
+  { label: "7:00 PM to 9:00 PM", hour: 19 },
 ];
+
+function nextDateForDay(targetDay, hour = 0) {
+  // Picker is relative to *today's* date: picking the current weekday gives
+  // today's date when the chosen hour is still in the future, otherwise the
+  // same weekday next week. Other weekdays land on the next occurrence.
+  const now = new Date();
+  const target = DAY_OFFSET[targetDay];
+  let dayDiff = ((target - now.getDay()) + 7) % 7;
+  if (dayDiff === 0) {
+    const todayAtHour = new Date(now);
+    todayAtHour.setHours(hour, 0, 0, 0);
+    if (todayAtHour <= now) dayDiff = 7;
+  }
+  const d = new Date(now);
+  d.setDate(now.getDate() + dayDiff);
+  d.setHours(hour, 0, 0, 0);
+  return d;
+}
 
 export default function CancelSessionStudent() {
   const safeBack = useSafeBack();
+  const { sessionId } = useLocalSearchParams();
+  const { user, profile } = useUser();
   const [day, setDay] = useState(null);
-  const [time, setTime] = useState(null);
+  const [timeSlot, setTimeSlot] = useState(null);
   const [picker, setPicker] = useState(null);
   const [savedSlot, setSavedSlot] = useState(null);
+  const [session, setSession] = useState(null);
+  const [busy, setBusy] = useState(false);
 
-  const options = picker === "day" ? DAYS : picker === "time" ? TIME_SLOTS : [];
+  useEffect(() => {
+    (async () => {
+      try {
+        const sessions = await listMySessions();
+        const upcoming = sessionId
+          ? sessions.find((s) => String(s.id) === String(sessionId))
+          : sessions
+              .filter((s) => s.status === "pending" || s.status === "confirmed")
+              .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at))[0];
+        setSession(upcoming || null);
+      } catch {
+        // ignore
+      }
+    })();
+  }, [sessionId]);
+
+  const options = picker === "day" ? DAYS : picker === "time" ? TIME_SLOTS.map((t) => t.label) : [];
 
   const choose = (val) => {
     if (picker === "day") setDay(val);
-    if (picker === "time") setTime(val);
+    if (picker === "time") {
+      const found = TIME_SLOTS.find((t) => t.label === val);
+      if (found) setTimeSlot(found);
+    }
     setPicker(null);
   };
 
-  const handleReschedule = () => {
-    if (!day || !time) {
+  const handleReschedule = async () => {
+    if (!day || !timeSlot) {
       Alert.alert(
         "Pick a day and time",
         "Please select both a day and a time slot.",
       );
       return;
     }
-    setSavedSlot({ day, time });
-    setDay(null);
-    setTime(null);
+    if (!session) {
+      Alert.alert("No session selected.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const newDate = nextDateForDay(day, timeSlot.hour);
+      await requestReschedule({
+        session_id: session.id,
+        new_time: newDate.toISOString(),
+        reason: "Student reschedule",
+        requested_by: user?.id,
+        user_timezone: profile.timezone || user?.timezone,
+      });
+      setSavedSlot({ day, time: timeSlot.label });
+      setDay(null);
+      setTimeSlot(null);
+      Alert.alert("Reschedule requested", "Your tutor will be notified.");
+    } catch (e) {
+      Alert.alert("Could not reschedule", e.message || "Please try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleCancel = () => {
-    Alert.alert(
-      "Session Cancelled",
-      "Your session was cancelled with no refund.",
-      [{ text: "OK", onPress: () => router.push("/student-lessons") }],
-    );
+  const handleCancel = async () => {
+    if (!session) {
+      router.push("/student-lessons");
+      return;
+    }
+    setBusy(true);
+    try {
+      await cancelSession(session.id);
+      Alert.alert(
+        "Session Cancelled",
+        "Your session was cancelled.",
+        [{ text: "OK", onPress: () => router.push("/student-lessons") }],
+      );
+    } catch (e) {
+      Alert.alert("Could not cancel", e.message || "Please try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -93,18 +171,25 @@ export default function CancelSessionStudent() {
           onPress={() => setPicker("time")}
           activeOpacity={0.7}
         >
-          <Text style={[styles.placeholder, time && styles.value]}>
-            {time || "Select Time"}
+          <Text style={[styles.placeholder, timeSlot && styles.value]}>
+            {timeSlot?.label || "Select Time"}
           </Text>
           <Ionicons name="chevron-down" size={18} color="#7E6D66" />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.saveBtn, (!day || !time) && styles.saveBtnDisabled]}
-          disabled={!day || !time}
+          style={[
+            styles.saveBtn,
+            (!day || !timeSlot || busy) && styles.saveBtnDisabled,
+          ]}
+          disabled={!day || !timeSlot || busy}
           onPress={handleReschedule}
         >
-          <Text style={styles.saveText}>Save Availability +</Text>
+          {busy ? (
+            <ActivityIndicator color="#FFFBFA" />
+          ) : (
+            <Text style={styles.saveText}>Request reschedule</Text>
+          )}
         </TouchableOpacity>
 
         {savedSlot && (
@@ -123,7 +208,8 @@ export default function CancelSessionStudent() {
         </Text>
 
         <TouchableOpacity
-          style={styles.cancelNoRefundBtn}
+          style={[styles.cancelNoRefundBtn, busy && { opacity: 0.6 }]}
+          disabled={busy}
           onPress={handleCancel}
         >
           <Text style={styles.cancelNoRefundText}>Cancel & No Refund</Text>
@@ -145,7 +231,7 @@ export default function CancelSessionStudent() {
               {options.map((opt) => {
                 const selected =
                   (picker === "day" && opt === day) ||
-                  (picker === "time" && opt === time);
+                  (picker === "time" && opt === timeSlot?.label);
                 return (
                   <TouchableOpacity
                     key={opt}
@@ -290,7 +376,7 @@ const styles = StyleSheet.create({
 
   cancelNoRefundBtn: {
     height: 44,
-    backgroundColor: "#EFC0A9",
+    backgroundColor: "#DD8153",
     borderRadius: 22,
     justifyContent: "center",
     alignItems: "center",

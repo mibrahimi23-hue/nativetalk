@@ -27,8 +27,13 @@ class GoogleLoginRequest(BaseModel):
     React Native sends the Google ID token obtained from:
       import { GoogleSignin } from '@react-native-google-signin/google-signin';
       const { idToken } = await GoogleSignin.signIn();
+
+    The optional *role* lets the mobile app pass the role chosen on the
+    role-selection screen when a new user signs up with Google. It is
+    ignored for existing accounts.
     """
     id_token: str
+    role: Optional[Literal["student", "teacher"]] = None
 
 
 class RegisterRequest(BaseModel):
@@ -36,6 +41,19 @@ class RegisterRequest(BaseModel):
     password: str
     full_name: str
     role: Literal["student", "teacher"]
+
+    # Optional profile-creation hints. These let the React Native onboarding flow
+    # finalize the language/level/certification selection in a single call
+    # instead of requiring a follow-up PATCH (which would 404 for new tutors
+    # because no Teacher row exists yet).
+    language_id:    Optional[int]  = None
+    is_native:      Optional[bool] = None
+    is_certified:   Optional[bool] = None
+    has_experience: Optional[bool] = None
+    bio:            Optional[str]  = None
+    timezone:       Optional[str]  = None
+    location:       Optional[str]  = None
+    phone:          Optional[str]  = None
 
     @field_validator("password")
     @classmethod

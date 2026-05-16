@@ -21,6 +21,9 @@ class Teacher(Base):
     passed_exam    = Column(Boolean, default=False)
     bio            = Column(Text)
     hourly_rate    = Column(sa.Numeric(10, 2), nullable=True)
+    # Tutor's preferred payment plan. Student bookings are forced to this plan.
+    # One of: "hour_by_hour", "50_50", "80_20".
+    payment_plan   = Column(String(20), nullable=False, default="hour_by_hour", server_default="hour_by_hour")
     created_at     = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     user                = relationship("User", back_populates="teacher")

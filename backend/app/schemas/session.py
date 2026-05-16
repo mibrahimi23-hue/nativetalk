@@ -10,7 +10,7 @@ class BookingCreate(BaseModel):
     after the student selects a teacher, level, time slot and payment plan.
     """
     teacher_id:       str
-    student_id:       str
+    student_id:       Optional[str] = None
     language_id:      int
     level:            str              # CEFR: A1 A2 B1 B2 C1 C2
     scheduled_at:     datetime         # ISO-8601, UTC recommended
@@ -18,6 +18,10 @@ class BookingCreate(BaseModel):
     total_hours:      int
     price_per_hour:   float
     payment_plan:     str = "hour_by_hour"   # "hour_by_hour" | "50_50" | "80_20"
+    # When the student is using a credit from a tutor-cancelled lesson, the
+    # frontend passes the existing CoursePayment id here. The endpoint skips
+    # creating a new CoursePayment and re-uses it for the new session.
+    course_payment_id: Optional[str] = None
 
 
 class BookingOut(BaseModel):
@@ -36,6 +40,8 @@ class SessionOut(BaseModel):
     id:                  str
     teacher_id:          str
     student_id:          str
+    course_payment_id:   str
+    language_id:         int
     level:               str
     scheduled_at:        datetime
     duration_minutes:    int

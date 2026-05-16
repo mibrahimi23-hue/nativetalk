@@ -1,8 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useState } from "react";
+import { useRouter } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
 import {
-  Alert,
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,45 +11,37 @@ import {
   View,
 } from "react-native";
 import { safeBack } from "@/hooks/use-safe-back";
-
-const studentsData = [
-  {
-    id: 1,
-    name: "Elara Voss",
-    attendance: "95%",
-    reschedules: 2,
-    eligible: "No",
-  },
-  {
-    id: 2,
-    name: "Benedict Cumberbatch",
-    attendance: "85%",
-    reschedules: 5,
-    eligible: "Yes",
-  },
-  {
-    id: 3,
-    name: "Alexandra Moon",
-    attendance: "91%",
-    reschedules: 5,
-    eligible: "Yes",
-  },
-  {
-    id: 4,
-    name: "Marcus Shaw",
-    attendance: "72%",
-    reschedules: 7,
-    eligible: "Yes",
-  },
-];
+import { listAdminUsers, suspendUser } from "@/services/admin";
 
 export default function AdminStudents() {
+  const router = useRouter();
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
-  const [students, setStudents] = useState(studentsData);
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [suspending, setSuspending] = useState(false);
+  const [showDashboardButton, setShowDashboardButton] = useState(false);
+  const [resultMessage, setResultMessage] = useState(null);
+  const [resultTone, setResultTone] = useState("success");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await listAdminUsers("student", { limit: 200 });
+      setStudents(Array.isArray(data) ? data : []);
+    } catch {
+      setStudents([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const filtered = students.filter((student) =>
-    student.name.toLowerCase().includes(search.toLowerCase()),
+    (student.name || "").toLowerCase().includes(search.toLowerCase()),
   );
 
   const toggle = (id) => {
@@ -73,31 +65,83 @@ export default function AdminStudents() {
     }
   };
 
-  const suspendStudents = () => {
+  const reasonFor = (student) => {
+    const attendanceStr = student.attendance || "100%";
+    const attendanceNum = parseInt(String(attendanceStr).replace("%", ""), 10);
+    const reschedules = student.reschedules ?? 0;
+    if (reschedules < 5) return `${reschedules} reschedules`;
+    if (attendanceNum !== 0) return `${attendanceStr} attendance`;
+    return "criteria not met";
+  };
+
+  const suspendStudents = async () => {
     if (selectedIds.length === 0) {
-      Alert.alert("Select Students", "Please select at least one student.");
+      setResultTone("error");
+      setResultMessage("Please select at least one student.");
       return;
     }
 
-    Alert.alert(
-      "Suspend account(s)?",
-      `This will suspend ${selectedIds.length} student${
-        selectedIds.length === 1 ? "" : "s"
-      }.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Suspend",
-          style: "destructive",
-          onPress: () => {
-            setStudents((prev) =>
-              prev.filter((s) => !selectedIds.includes(s.id)),
-            );
-            setSelectedIds([]);
-          },
-        },
-      ],
-    );
+    const targets = students.filter((s) => selectedIds.includes(s.id));
+    const ineligible = targets.filter((s) => s.eligible !== "Yes");
+
+    if (ineligible.length > 0) {
+      const lines = ineligible.map(
+        (s) => `${s.name} can't be suspended — ${reasonFor(s)}.`,
+      );
+      setResultTone("error");
+      setResultMessage(lines.join("\n"));
+      setShowDashboardButton(true);
+      return;
+    }
+
+    setSuspending(true);
+    setResultMessage(null);
+    try {
+      const results = await Promise.all(
+        selectedIds.map((id) => {
+          const target = targets.find((s) => s.id === id);
+          const reason =
+            (target?.reschedules ?? 0) >= 5 ? "reschedule_limit" : "absence_limit";
+          return suspendUser({
+            user_id: id,
+            reason,
+            notes: "Suspended via admin manage students screen.",
+          })
+            .then(() => ({ ok: true, id }))
+            .catch((err) => ({
+              ok: false,
+              id,
+              message: err?.message || "Suspension failed.",
+            }));
+        })
+      );
+      const succeeded = results.filter((r) => r.ok);
+      const failed = results.filter((r) => !r.ok);
+
+      setSelectedIds([]);
+      await load();
+
+      if (failed.length === 0) {
+        setResultTone("success");
+        setResultMessage(
+          `${succeeded.length} student${
+            succeeded.length === 1 ? "" : "s"
+          } suspended successfully. Their paid transactions remain visible in Transaction Overview.`,
+        );
+      } else {
+        const lines = failed.map((r) => {
+          const target = targets.find((t) => t.id === r.id);
+          const name = target?.name || "This account";
+          return `${name} — ${r.message}`;
+        });
+        setResultTone(succeeded.length === 0 ? "error" : "success");
+        setResultMessage(lines.join("\n"));
+      }
+
+      setShowDashboardButton(true);
+    } finally {
+      setSuspending(false);
+    }
   };
 
   return (
@@ -151,7 +195,9 @@ export default function AdminStudents() {
         contentContainerStyle={{ paddingBottom: 90 }}
         showsVerticalScrollIndicator={false}
       >
-        {filtered.length === 0 ? (
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 30 }} />
+        ) : filtered.length === 0 ? (
           <Text style={styles.emptyText}>No students match your search.</Text>
         ) : (
           filtered.map((student) => {
@@ -171,14 +217,17 @@ export default function AdminStudents() {
                 <View style={styles.studentInfo}>
                   <Text style={styles.name}>{student.name}</Text>
                   <Text style={styles.info}>
-                    Attendance: {student.attendance}
+                    Attendance: {student.attendance || "100%"}
                   </Text>
                   <Text style={styles.info}>
-                    Continuous unattended reschedules: {student.reschedules}
+                    Continuous unattended reschedules: {student.reschedules ?? 0}
                   </Text>
                   <Text style={styles.info}>
                     Eligible for Suspension: {student.eligible}
                   </Text>
+                  {student.is_suspended ? (
+                    <Text style={styles.suspendedTag}>Currently suspended</Text>
+                  ) : null}
                 </View>
               </TouchableOpacity>
             );
@@ -186,19 +235,51 @@ export default function AdminStudents() {
         )}
       </ScrollView>
 
-      <TouchableOpacity
-        style={[
-          styles.suspendBtn,
-          selectedIds.length === 0 && styles.suspendBtnDisabled,
-        ]}
-        onPress={suspendStudents}
-      >
-        <Text style={styles.suspendText}>
-          {selectedIds.length > 1
-            ? `Suspend ${selectedIds.length} accounts`
-            : "Suspend Account"}
-        </Text>
-      </TouchableOpacity>
+      {resultMessage ? (
+        <View style={styles.resultBanner}>
+          <Ionicons
+            name={
+              resultTone === "error"
+                ? "alert-circle-outline"
+                : "checkmark-circle-outline"
+            }
+            size={14}
+            color="#FF9E6D"
+          />
+          <Text style={styles.resultText}>{resultMessage}</Text>
+        </View>
+      ) : null}
+
+      <View style={styles.actionBar}>
+        {showDashboardButton ? (
+          <TouchableOpacity
+            style={styles.dashboardBtn}
+            onPress={() => router.replace("/admin-dashboard")}
+          >
+            <Ionicons name="home-outline" size={17} color="#FFFBFA" />
+            <Text style={styles.suspendText}>Back to Dashboard</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[
+              styles.suspendBtn,
+              (selectedIds.length === 0 || suspending) && styles.suspendBtnDisabled,
+            ]}
+            disabled={suspending}
+            onPress={suspendStudents}
+          >
+            {suspending ? (
+              <ActivityIndicator color="#FFFBFA" />
+            ) : (
+              <Text style={styles.suspendText}>
+                {selectedIds.length > 1
+                  ? `Suspend ${selectedIds.length} accounts`
+                  : "Suspend Account"}
+              </Text>
+            )}
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   );
 }
@@ -323,6 +404,14 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
+  suspendedTag: {
+    fontFamily: "Outfit",
+    fontSize: 11,
+    color: "#DD8153",
+    marginTop: 4,
+    fontWeight: "700",
+  },
+
   emptyText: {
     fontFamily: "Outfit",
     fontSize: 12,
@@ -331,16 +420,63 @@ const styles = StyleSheet.create({
     marginTop: 30,
   },
 
-  suspendBtn: {
+  resultBanner: {
+    position: "absolute",
+    left: 22,
+    right: 22,
+    bottom: 76,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: "#FFF1E8",
+  },
+
+  resultBannerSuccess: {
+    backgroundColor: "#FFF1E8",
+  },
+
+  resultBannerError: {
+    backgroundColor: "#FFF1E8",
+  },
+
+  resultText: {
+    flex: 1,
+    fontFamily: "Outfit",
+    fontSize: 11,
+    color: "#7E6D66",
+    lineHeight: 14,
+  },
+
+  actionBar: {
     position: "absolute",
     bottom: 22,
     left: 22,
     right: 22,
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  suspendBtn: {
+    flex: 1,
     height: 44,
     backgroundColor: "#FF9E6D",
     borderRadius: 22,
     justifyContent: "center",
     alignItems: "center",
+  },
+
+  dashboardBtn: {
+    flex: 1,
+    height: 44,
+    backgroundColor: "#FF9E6D",
+    borderRadius: 22,
+    justifyContent: "center",
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
   },
 
   suspendBtnDisabled: {

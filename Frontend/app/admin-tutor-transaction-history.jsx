@@ -1,24 +1,117 @@
-import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { safeBack } from "@/hooks/use-safe-back";
+﻿import { Ionicons } from "@expo/vector-icons";
+import { router, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-    Alert,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
+import { safeBack } from "@/hooks/use-safe-back";
+import { listAdminTransactions } from "@/services/admin";
 
-const transactions = [
-  "Spanish Lesson A1",
-  "Spanish Lesson B1-50%",
-  "Spanish Lesson A2-Conversation in a Restaurant",
-  "Spanish Lesson B1",
-  "English Lesson A1",
-];
+function formatDate(dateString) {
+  if (!dateString) return "";
+  const d = new Date(dateString);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(
+    d.getDate(),
+  ).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+function planLabel(plan) {
+  if (plan === "hour_by_hour") return "Hourly payment";
+  if (plan === "50_50") return "50% payment";
+  if (plan === "80_20") return "80% payment";
+  return "Payment";
+}
 
 export default function AdminTutorTransactionHistory() {
+  // The admin transaction details page pushes us here with the tutor's
+  // email and display name. We filter the platform-wide transaction feed
+  // down to rows that belong to this tutor.
+  const { teacherEmail, teacherName } = useLocalSearchParams();
+  const targetEmail = (
+    Array.isArray(teacherEmail) ? teacherEmail[0] : teacherEmail || ""
+  )
+    .toString()
+    .toLowerCase();
+  const targetName = (
+    Array.isArray(teacherName) ? teacherName[0] : teacherName || ""
+  )
+    .toString()
+    .toLowerCase();
+
+  const [transactions, setTransactions] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await listAdminTransactions({ limit: 200 });
+      setTransactions(Array.isArray(data) ? data : []);
+    } catch {
+      setTransactions([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Filter and summarise this tutor's earnings. The admin transactions feed
+  // includes both `paypal_payment` rows (incoming student money) and
+  // `tutor_payout` rows (released to the tutor). For the balance/earnings
+  // header we count the tutor_payout rows; for the list we show everything
+  // touching this tutor.
+  const tutorRows = useMemo(() => {
+    if (!targetEmail && !targetName) return transactions;
+    return transactions.filter((t) => {
+      const email = (t.teacher_email || "").toString().toLowerCase();
+      const name = (t.teacher_name || "").toString().toLowerCase();
+      if (targetEmail && email) return email === targetEmail;
+      if (targetName) return name === targetName;
+      return false;
+    });
+  }, [transactions, targetEmail, targetName]);
+
+  const earnings = useMemo(() => {
+    const now = new Date();
+    const startOfToday = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
+    const startOfWeek = new Date(startOfToday);
+    startOfWeek.setDate(startOfToday.getDate() - 7);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    let total = 0;
+    let today = 0;
+    let week = 0;
+    let month = 0;
+    tutorRows.forEach((t) => {
+      if (t.kind !== "tutor_payout") return;
+      const amount = Number(t.teacher_payout ?? t.amount ?? 0) || 0;
+      total += amount;
+      const ts = new Date(t.paid_at || t.created_at || 0);
+      if (Number.isNaN(ts.getTime())) return;
+      if (ts >= startOfToday) today += amount;
+      if (ts >= startOfWeek) week += amount;
+      if (ts >= startOfMonth) month += amount;
+    });
+    return {
+      total: total.toFixed(2),
+      today: today.toFixed(2),
+      week: week.toFixed(2),
+      month: month.toFixed(2),
+    };
+  }, [tutorRows]);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -30,13 +123,20 @@ export default function AdminTutorTransactionHistory() {
         <View style={{ width: 30 }} />
       </View>
 
+      {(targetName || targetEmail) && (
+        <Text style={styles.studentLine}>
+          {targetName ? targetName : ""}
+          {targetName && targetEmail ? " · " : ""}
+          {targetEmail ? targetEmail : ""}
+        </Text>
+      )}
+
       {/* Balance Card */}
       <View style={styles.balanceCard}>
         <View>
           <Text style={styles.small}>Total Balance</Text>
-          <Text style={styles.balance}>$500</Text>
+          <Text style={styles.balance}>€{earnings.total}</Text>
         </View>
-
         <View>
           <Text style={styles.small}>Available Funds</Text>
         </View>
@@ -44,38 +144,64 @@ export default function AdminTutorTransactionHistory() {
 
       {/* Earnings */}
       <View style={styles.earningsRow}>
-        <Text style={styles.earningText}>Todays Earnings{"\n"}$9.5</Text>
-
+        <Text style={styles.earningText}>
+          Today's Earnings{"\n"}€{earnings.today}
+        </Text>
       </View>
 
       <View style={styles.earningsRow2}>
-        <Text style={styles.earningText}>Last Weeks Earnings{"\n"}$90.00</Text>
         <Text style={styles.earningText}>
-          This Months Earnings{"\n"}$350.00
+          Last 7 Days{"\n"}€{earnings.week}
+        </Text>
+        <Text style={styles.earningText}>
+          This Month{"\n"}€{earnings.month}
         </Text>
       </View>
 
       <Text style={styles.sectionTitle}>Recent Transactions</Text>
 
-      <ScrollView showsVerticalScrollIndicator={false}>
-        {transactions.map((item, index) => (
-          <TouchableOpacity
-            key={index}
-            style={styles.transactionRow}
-            onPress={() => Alert.alert("Transaction", item)}
-          >
-            <Text style={styles.transactionTitle}>{item}</Text>
-            <Text style={styles.transactionInfo}>
-              {index === 2
-                ? "Mobile Payment"
-                : index === 1 || index === 4
-                  ? "Credit Card"
-                  : "Debit Card"}{" "}
-              - 10/{21 - index}/2023
-            </Text>
-            <Text style={styles.received}>Received</Text>
-          </TouchableOpacity>
-        ))}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 80 }}
+      >
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 30 }} />
+        ) : tutorRows.length === 0 ? (
+          <Text style={styles.empty}>No transactions yet for this tutor.</Text>
+        ) : (
+          tutorRows.map((item) => (
+            <TouchableOpacity
+              key={item.id}
+              style={styles.transactionRow}
+              onPress={() =>
+                router.push({
+                  pathname: "/admin-transaction-details",
+                  params: { transactionId: item.id },
+                })
+              }
+            >
+              <Text style={styles.transactionTitle}>
+                {item.level ? `${item.level} Lesson` : "Lesson"} ·{" "}
+                €{Number(
+                  item.kind === "tutor_payout"
+                    ? item.teacher_payout ?? item.amount
+                    : item.amount,
+                ).toFixed(2)}
+              </Text>
+              <Text style={styles.transactionInfo}>
+                {planLabel(item.payment_plan)} -{" "}
+                {formatDate(item.paid_at || item.created_at)}
+              </Text>
+              <Text style={styles.received}>
+                {item.kind === "tutor_payout"
+                  ? "Received"
+                  : item.student_name
+                    ? `From ${item.student_name}`
+                    : "Payment"}
+              </Text>
+            </TouchableOpacity>
+          ))
+        )}
       </ScrollView>
 
       <View style={styles.bottomNav}>
@@ -110,7 +236,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 20,
+    marginBottom: 12,
   },
 
   backBtn: {
@@ -128,6 +254,14 @@ const styles = StyleSheet.create({
     fontFamily: "Domine",
     fontSize: 13,
     color: "#28221B",
+  },
+
+  studentLine: {
+    fontFamily: "Outfit",
+    fontSize: 12,
+    color: "#7E6D66",
+    marginBottom: 14,
+    textAlign: "center",
   },
 
   balanceCard: {
@@ -170,19 +304,6 @@ const styles = StyleSheet.create({
     color: "#28221B",
   },
 
-  detailsBtn: {
-    backgroundColor: "#FF9E6D",
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    borderRadius: 18,
-  },
-
-  detailsText: {
-    color: "#FFFBFA",
-    fontFamily: "Outfit",
-    fontSize: 11,
-  },
-
   sectionTitle: {
     fontFamily: "Domine",
     fontSize: 18,
@@ -193,7 +314,7 @@ const styles = StyleSheet.create({
   transactionRow: {
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "#EEE",
+    borderBottomColor: "#EFE6E1",
   },
 
   transactionTitle: {
@@ -213,6 +334,14 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit",
     fontSize: 11,
     color: "#7E6D66",
+  },
+
+  empty: {
+    fontFamily: "Outfit",
+    fontSize: 12,
+    color: "#7E6D66",
+    textAlign: "center",
+    marginTop: 40,
   },
 
   bottomNav: {

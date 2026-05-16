@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useState } from "react";
+import { router, useLocalSearchParams } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Modal,
@@ -12,47 +12,97 @@ import {
   View,
 } from "react-native";
 import { safeBack } from "@/hooks/use-safe-back";
+import { useUser } from "@/contexts/user-context";
+import { listMySessions } from "@/services/sessions";
+import { markAttendance } from "@/services/suspension";
+import { requestReschedule } from "@/services/reschedule";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_OFFSET = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 };
 
 const TIME_SLOTS = [
-  "9:00 AM to 11:00 AM",
-  "11:00 AM to 1:00 PM",
-  "1:00 PM to 3:00 PM",
-  "3:00 PM to 5:00 PM",
-  "5:00 PM to 7:00 PM",
-  "7:00 PM to 9:00 PM",
+  { label: "9:00 AM to 11:00 AM", hour: 9 },
+  { label: "11:00 AM to 1:00 PM", hour: 11 },
+  { label: "1:00 PM to 3:00 PM", hour: 13 },
+  { label: "3:00 PM to 5:00 PM", hour: 15 },
+  { label: "5:00 PM to 7:00 PM", hour: 17 },
+  { label: "7:00 PM to 9:00 PM", hour: 19 },
 ];
 
+function nextDateForDay(targetDay, hour) {
+  // Picker is relative to *today's* date: picking the current weekday gives
+  // today's date when the chosen hour is still in the future, otherwise the
+  // same weekday next week. Other weekdays land on the next occurrence.
+  const now = new Date();
+  const target = DAY_OFFSET[targetDay];
+  let dayDiff = ((target - now.getDay()) + 7) % 7;
+  if (dayDiff === 0) {
+    const todayAtHour = new Date(now);
+    todayAtHour.setHours(hour, 0, 0, 0);
+    if (todayAtHour <= now) dayDiff = 7;
+  }
+  const d = new Date(now);
+  d.setDate(now.getDate() + dayDiff);
+  d.setHours(hour, 0, 0, 0);
+  return d;
+}
+
 export default function StudentDidntJoin() {
+  const { sessionId } = useLocalSearchParams();
+  const { user, profile } = useUser();
   const [day, setDay] = useState(null);
-  const [time, setTime] = useState(null);
+  const [timeSlot, setTimeSlot] = useState(null);
   const [picker, setPicker] = useState(null);
   const [savedSlot, setSavedSlot] = useState(null);
   const [absent, setAbsent] = useState(false);
+  const [session, setSession] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [absentDoneVisible, setAbsentDoneVisible] = useState(false);
+  const dismissTimer = useRef(null);
 
-  const options = picker === "day" ? DAYS : picker === "time" ? TIME_SLOTS : [];
+  useEffect(() => () => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const sessions = await listMySessions();
+        const found = sessionId
+          ? sessions.find((s) => String(s.id) === String(sessionId))
+          : sessions.filter((s) => s.status === "confirmed")[0];
+        setSession(found || null);
+      } catch {
+        setSession(null);
+      }
+    })();
+  }, [sessionId]);
+
+  const options = picker === "day" ? DAYS : picker === "time" ? TIME_SLOTS.map((t) => t.label) : [];
 
   const choose = (val) => {
     if (picker === "day") setDay(val);
-    if (picker === "time") setTime(val);
+    if (picker === "time") {
+      const found = TIME_SLOTS.find((t) => t.label === val);
+      if (found) setTimeSlot(found);
+    }
     setPicker(null);
   };
 
   const handleSaveAvailability = () => {
-    if (!day || !time) {
+    if (!day || !timeSlot) {
       Alert.alert(
         "Pick a day and time",
         "Please select both a day and a time slot.",
       );
       return;
     }
-    setSavedSlot({ day, time });
+    setSavedSlot({ day, time: timeSlot.label, when: nextDateForDay(day, timeSlot.hour) });
     setDay(null);
-    setTime(null);
+    setTimeSlot(null);
   };
 
-  const handleContinue = () => {
+  const handleContinue = async () => {
     if (!savedSlot && !absent) {
       Alert.alert(
         "Choose an action",
@@ -60,17 +110,42 @@ export default function StudentDidntJoin() {
       );
       return;
     }
-    if (absent) {
-      Alert.alert("Marked absent", "Student has been marked as absent.", [
-        { text: "OK", onPress: () => router.replace("/tutor-dashboard") },
-      ]);
-      return;
+    setBusy(true);
+    try {
+      if (absent && session) {
+        await markAttendance({
+          session_id: session.id,
+          student_id: session.student_id,
+          was_present: false,
+        });
+        // Show the in-app success modal, then auto-route back to the tutor
+        // dashboard (matches the "Review sent" pattern elsewhere).
+        setAbsentDoneVisible(true);
+        dismissTimer.current = setTimeout(() => {
+          setAbsentDoneVisible(false);
+          router.replace("/tutor-dashboard");
+        }, 1500);
+        return;
+      }
+      if (savedSlot && session) {
+        await requestReschedule({
+          session_id: session.id,
+          new_time: savedSlot.when.toISOString(),
+          reason: "Student didn't join — rescheduling",
+          requested_by: user?.id,
+          user_timezone: profile.timezone || user?.timezone,
+        });
+        Alert.alert(
+          "Rescheduled",
+          `New slot: ${savedSlot.day} - ${savedSlot.time}.`,
+          [{ text: "OK", onPress: () => router.replace("/tutor-dashboard") }],
+        );
+      }
+    } catch (e) {
+      Alert.alert("Could not save", e.message || "Please try again.");
+    } finally {
+      setBusy(false);
     }
-    Alert.alert(
-      "Rescheduled",
-      `New slot: ${savedSlot.day} - ${savedSlot.time}.`,
-      [{ text: "OK", onPress: () => router.replace("/tutor-dashboard") }],
-    );
   };
 
   return (
@@ -107,15 +182,18 @@ export default function StudentDidntJoin() {
           onPress={() => setPicker("time")}
           activeOpacity={0.7}
         >
-          <Text style={[styles.placeholder, time && styles.value]}>
-            {time || "Select Time"}
+          <Text style={[styles.placeholder, timeSlot && styles.value]}>
+            {timeSlot?.label || "Select Time"}
           </Text>
           <Ionicons name="chevron-down" size={18} color="#7E6D66" />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.saveBtn, (!day || !time) && styles.saveBtnDisabled]}
-          disabled={!day || !time}
+          style={[
+            styles.saveBtn,
+            (!day || !timeSlot) && styles.saveBtnDisabled,
+          ]}
+          disabled={!day || !timeSlot}
           onPress={handleSaveAvailability}
         >
           <Text style={styles.saveText}>Save Availability +</Text>
@@ -149,9 +227,27 @@ export default function StudentDidntJoin() {
         </TouchableOpacity>
       </ScrollView>
 
-      <TouchableOpacity style={styles.continueBtn} onPress={handleContinue}>
+      <TouchableOpacity
+        style={[styles.continueBtn, busy && { opacity: 0.6 }]}
+        disabled={busy}
+        onPress={handleContinue}
+      >
         <Text style={styles.continueText}>Continue</Text>
       </TouchableOpacity>
+
+      <Modal visible={absentDoneVisible} transparent animationType="fade">
+        <View style={styles.sentOverlay}>
+          <View style={styles.sentCard}>
+            <View style={styles.sentIcon}>
+              <Ionicons name="checkmark" size={36} color="#FF9E6D" />
+            </View>
+            <Text style={styles.sentTitle}>The student absent successfully</Text>
+            <Text style={styles.sentText}>
+              Returning to your dashboard…
+            </Text>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={picker !== null}
@@ -168,7 +264,7 @@ export default function StudentDidntJoin() {
               {options.map((opt) => {
                 const selected =
                   (picker === "day" && opt === day) ||
-                  (picker === "time" && opt === time);
+                  (picker === "time" && opt === timeSlot?.label);
                 return (
                   <TouchableOpacity
                     key={opt}
@@ -414,5 +510,44 @@ const styles = StyleSheet.create({
   modalRowTextSelected: {
     color: "#FF9E6D",
     fontWeight: "700",
+  },
+
+  sentOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(40, 34, 27, 0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 28,
+  },
+  sentCard: {
+    width: "100%",
+    backgroundColor: "#FFFBFA",
+    borderRadius: 20,
+    paddingHorizontal: 24,
+    paddingVertical: 26,
+    alignItems: "center",
+  },
+  sentIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#FFF1E8",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  sentTitle: {
+    fontFamily: "Domine",
+    fontSize: 18,
+    color: "#28221B",
+    marginBottom: 6,
+    textAlign: "center",
+  },
+  sentText: {
+    fontFamily: "Outfit",
+    fontSize: 12,
+    color: "#7E6D66",
+    textAlign: "center",
+    lineHeight: 17,
   },
 });

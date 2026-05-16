@@ -1,27 +1,58 @@
-import { Ionicons } from "@expo/vector-icons";
+﻿import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { safeBack } from "@/hooks/use-safe-back";
+import { useCallback, useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
-
-const materials = [
-  "Vocabulary List",
-  "Grammar Guide",
-  "Practice Exercises",
-  "Audio Lessons",
-  "Grammar Guide",
-  "Audio Lessons",
-  "Vocabulary List",
-  "Audio Lessons",
-];
+import { buildMediaUrl } from "@/services/api";
+import { listMaterials } from "@/services/materials";
 
 export default function StudentMaterials() {
+  const [materials, setMaterials] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Backend filters: tutor → their uploads, student → materials matching the
+  // student's enrolled languages. No need to pass language_id from here.
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await listMaterials();
+      setMaterials(Array.isArray(data) ? data : []);
+    } catch {
+      setMaterials([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const openMaterial = async (mat) => {
+    const url = buildMediaUrl(mat.download_url || mat.file_path);
+    if (!url) {
+      Alert.alert("No document", "This material doesn't have a file attached.");
+      return;
+    }
+    try {
+      const ok = await Linking.canOpenURL(url);
+      if (ok) await Linking.openURL(url);
+      else if (Platform.OS === "web") window.open(url, "_blank");
+    } catch {
+      if (Platform.OS === "web") window.open(url, "_blank");
+    }
+  };
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -38,18 +69,27 @@ export default function StudentMaterials() {
 
       {/* Materials List */}
       <ScrollView showsVerticalScrollIndicator={false}>
-        {materials.map((item, index) => (
-          <TouchableOpacity
-            key={index}
-            style={styles.materialRow}
-            onPress={() =>
-              Alert.alert("Download", `${item} downloaded successfully`)
-            }
-          >
-            <Text style={styles.materialText}>{item}</Text>
-            <Ionicons name="download-outline" size={16} color="#28221B" />
-          </TouchableOpacity>
-        ))}
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 24 }} />
+        ) : materials.length === 0 ? (
+          <Text style={{ fontFamily: "Outfit", color: "#A89080", marginTop: 20 }}>
+            No materials yet for your language and level.
+          </Text>
+        ) : (
+          materials.map((mat) => (
+            <TouchableOpacity
+              key={mat.id}
+              style={styles.materialRow}
+              onPress={() => openMaterial(mat)}
+            >
+              <Text style={styles.materialText}>
+                {mat.title}
+                {mat.level ? ` · ${mat.level}` : ""}
+              </Text>
+              <Ionicons name="download-outline" size={16} color="#28221B" />
+            </TouchableOpacity>
+          ))
+        )}
 
         <View style={{ height: 80 }} />
       </ScrollView>
@@ -121,7 +161,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: "#EEE",
+    borderBottomColor: "#EFE6E1",
   },
 
   materialText: {

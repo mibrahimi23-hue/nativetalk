@@ -21,6 +21,9 @@ python-multipart>=0.0.9            # form data (file uploads)
 # ── HTTP client (Daily.co API) ─────────────────────────────────────────────────
 httpx>=0.27.0
 
+# ── Image processing ──────────────────────────────────────────────────────────
+Pillow>=10.0.0                     # resize / compress profile photos
+
 # ── Utilities ──────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
 pytz>=2024.1

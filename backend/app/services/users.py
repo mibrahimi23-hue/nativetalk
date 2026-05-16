@@ -17,7 +17,7 @@ from app.core.security import (
     sha256_hex,
 )
 from app.core.config import get_settings
-from app.models.user import BlacklistedToken, RefreshToken, User
+from app.models.users import BlacklistedToken, RefreshToken, User
 
 settings = get_settings()
 
@@ -29,10 +29,15 @@ def upsert_google_user(
     email: str,
     full_name: str,
     picture: Optional[str] = None,
+    role: Optional[str] = None,
 ) -> User:
     """
     Find an existing user by google_id or email; create one if not found.
     Never overwrites password_hash so email+password accounts remain valid.
+
+    The optional *role* parameter is honoured only when creating a brand-new
+    user. Existing users always keep their stored role to avoid privilege
+    changes on sign-in.
     """
     user = db.query(User).filter(User.google_id == google_sub).first()
     if not user:
@@ -47,12 +52,13 @@ def upsert_google_user(
         db.refresh(user)
         return user
 
-    # New user — default role is "student"; they can be upgraded later
+    new_role = role if role in {"student", "teacher"} else "student"
+
     user = User(
         email=email,
         full_name=full_name,
-        password_hash="",          # Google users have no local password
-        role="student",
+        password_hash=hash_password(create_refresh_token_value()),
+        role=new_role,
         google_id=google_sub,
         profile_photo=picture,
     )

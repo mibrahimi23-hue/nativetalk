@@ -26,9 +26,6 @@ def check_student_absences(student_id: str, db: DBSession):
         SessionAttendance.student_id == student_id
     ).count()
 
-    if total == 0:
-        return
-
     absences = db.query(SessionAttendance).filter(
         and_(
             SessionAttendance.student_id == student_id,
@@ -36,37 +33,55 @@ def check_student_absences(student_id: str, db: DBSession):
         )
     ).count()
 
-    absence_percent = (absences / total) * 100
+    # A student is suspended once they hit three absences (the platform-wide
+    # rule the user is enforcing). The 60% ratio is kept as an additional
+    # safety net for older accounts with a lot of attendance history.
+    hit_count_limit = absences >= 3
+    hit_ratio_limit = total > 0 and (absences / total) * 100 > 60
 
-    if absence_percent > 60:
-        student = db.query(Student).filter(Student.id == student_id).first()
+    if not (hit_count_limit or hit_ratio_limit):
+        return
 
-        already = db.query(Suspension).filter(
-            and_(
-                Suspension.student_id == student_id,
-                Suspension.reason == "absence_limit",
-                Suspension.is_active == True
-            )
-        ).first()
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        return
 
-        if not already:
-            suspension = Suspension(
-                id=uuid.uuid4(),
-                user_id=student.user_id,
-                teacher_id=None,
-                student_id=student.id,
-                role="student",
-                reason="absence_limit",
-                no_refund=False,
-                is_active=True,
-                notes=f"Suspended automatically! Absesnces: {absence_percent:.1f}%"
-            )
-            db.add(suspension)
-            db.commit()
-            raise HTTPException(
-                status_code=403,
-                detail=f"Student suspended! Absences: {absence_percent:.1f}%"
-            )
+    already = db.query(Suspension).filter(
+        and_(
+            Suspension.student_id == student_id,
+            Suspension.reason == "absence_limit",
+            Suspension.is_active == True
+        )
+    ).first()
+    if already:
+        return
+
+    note = (
+        f"Suspended automatically after {absences} absences"
+        if hit_count_limit
+        else f"Suspended automatically! Absences: {(absences / total) * 100:.1f}%"
+    )
+    suspension = Suspension(
+        id=uuid.uuid4(),
+        user_id=student.user_id,
+        teacher_id=None,
+        student_id=student.id,
+        role="student",
+        reason="absence_limit",
+        no_refund=False,
+        is_active=True,
+        notes=note,
+    )
+    db.add(suspension)
+    db.commit()
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"Student suspended! {absences} absences."
+            if hit_count_limit
+            else f"Student suspended! Absences: {(absences / total) * 100:.1f}%"
+        ),
+    )
 
 
 def check_teacher_noshows(teacher_id: str, db: DBSession):
@@ -204,6 +219,16 @@ def mark_attendance(
         was_present=was_present
     )
     db.add(attendance)
+
+    # Flip the booking off the "upcoming" track so it stops showing on
+    # either dashboard's "Upcoming Lessons" list and surfaces under the
+    # transactions / history sections instead. We use distinct statuses so
+    # the UI can label the row correctly:
+    #   was_present=False → "absent"   (student no-show)
+    #   was_present=True  → "completed" (lesson ran)
+    if session.status in ("pending", "confirmed"):
+        session.status = "absent" if not was_present else "completed"
+
     db.commit()
 
     if not was_present:
@@ -211,7 +236,8 @@ def mark_attendance(
 
     return {
         "message":     "Attendance marked!",
-        "was_present": was_present
+        "was_present": was_present,
+        "session_status": session.status,
     }
 
 

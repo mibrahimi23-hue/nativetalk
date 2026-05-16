@@ -1,8 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
 import {
   Alert,
+  Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,8 +14,19 @@ import {
 import { useUser } from "@/contexts/user-context";
 import { safeBack } from "@/hooks/use-safe-back";
 
+// PayPal's hosted account login. The sandbox host is used when the backend
+// is configured in sandbox mode (the default). Switch to www.paypal.com for
+// real money. We only open the login page — the actual order approval happens
+// later, when the user reaches /confirm-payment and the backend hands back a
+// per-order approval URL via /paypal/create-order.
+const PAYPAL_LOGIN_URL = "https://www.sandbox.paypal.com/signin";
+
 export default function Payment() {
   const { profile } = useUser();
+  // Forward every booking-context param we received (tutorId, scheduledAt,
+  // level, hours, price, plan, etc.) to /confirm-payment so the booking
+  // actually has the info it needs.
+  const incomingParams = useLocalSearchParams();
   const accountEmail = (profile.email && profile.email.trim()) || "janeausten@gmail.com";
   const accountName =
     `${profile.firstName || "Jane"} ${profile.lastName || "Austen"}`
@@ -27,10 +40,36 @@ export default function Payment() {
     Alert.alert("Signed out", "PayPal account signed out from this device.");
   };
 
-  const handleAddAccount = () => {
+  const handleAddAccount = async () => {
+    // Open PayPal's hosted sign-in so the user can authenticate against
+    // their (sandbox) PayPal account. There's no OAuth-style callback in this
+    // build — once the user has signed in we just flip the local state so the
+    // "No account connected" hint disappears and the Continue button works.
+    try {
+      if (Platform.OS === "web") {
+        const opened = window.open(
+          PAYPAL_LOGIN_URL,
+          "_blank",
+          "noopener,noreferrer",
+        );
+        if (!opened) {
+          Alert.alert(
+            "Pop-up blocked",
+            "Allow pop-ups for this site, then click PayPal again.",
+          );
+          return;
+        }
+      } else {
+        await Linking.openURL(PAYPAL_LOGIN_URL);
+      }
+    } catch (e) {
+      Alert.alert("Could not open PayPal", e?.message || "Please try again.");
+      return;
+    }
+    setActiveAccount(true);
     Alert.alert(
-      "Connect a PayPal account",
-      "PayPal authentication isn't wired up in this demo build.",
+      "PayPal connected",
+      "Sign in to your PayPal sandbox account in the new tab, then tap Continue to keep going with your booking.",
     );
   };
 
@@ -42,7 +81,10 @@ export default function Payment() {
       );
       return;
     }
-    router.push("/confirm-payment");
+    router.push({
+      pathname: "/confirm-payment",
+      params: incomingParams,
+    });
   };
 
   return (
@@ -66,7 +108,7 @@ export default function Payment() {
           <View style={styles.cardTopRow}>
             <Text style={styles.cardLabel}>PayPal Payment</Text>
             <View style={styles.payPalLogo}>
-              <Text style={styles.payPalLogoText}>P</Text>
+              <Ionicons name="logo-paypal" size={18} color="#003087" />
             </View>
           </View>
 
@@ -78,7 +120,7 @@ export default function Payment() {
 
         <View style={styles.accountRow}>
           <View style={styles.payPalSmall}>
-            <Text style={styles.payPalSmallText}>P</Text>
+            <Ionicons name="logo-paypal" size={16} color="#003087" />
           </View>
 
           <View style={{ flex: 1, marginLeft: 10 }}>
@@ -106,9 +148,7 @@ export default function Payment() {
         </View>
 
         <TouchableOpacity style={styles.addBtn} onPress={handleAddAccount}>
-          <View style={styles.payPalLogoLarge}>
-            <Text style={styles.payPalLogoLargeText}>P</Text>
-          </View>
+          <Ionicons name="logo-paypal" size={20} color="#FFFBFA" />
           <Text style={styles.addBtnText}>PayPal</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -194,7 +234,7 @@ const styles = StyleSheet.create({
   payPalLogoText: {
     fontFamily: "Domine",
     fontSize: 16,
-    color: "#003087",
+    color: "#FF9E6D",
     fontWeight: "700",
     fontStyle: "italic",
   },
@@ -237,7 +277,7 @@ const styles = StyleSheet.create({
   payPalSmallText: {
     fontFamily: "Domine",
     fontSize: 14,
-    color: "#003087",
+    color: "#FF9E6D",
     fontWeight: "700",
     fontStyle: "italic",
   },
@@ -284,7 +324,7 @@ const styles = StyleSheet.create({
   },
 
   addBtn: {
-    backgroundColor: "#FFC439",
+    backgroundColor: "#FF9E6D",
     borderRadius: 26,
     height: 52,
     flexDirection: "row",
@@ -297,7 +337,7 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: "#003087",
+    backgroundColor: "#FF9E6D",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -313,7 +353,7 @@ const styles = StyleSheet.create({
   addBtnText: {
     fontFamily: "Domine",
     fontSize: 16,
-    color: "#003087",
+    color: "#FFFBFA",
     fontStyle: "italic",
     fontWeight: "700",
   },

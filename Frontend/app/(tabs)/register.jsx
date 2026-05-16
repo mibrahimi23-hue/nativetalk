@@ -1,7 +1,9 @@
-import { Link, router } from "expo-router";
-import { useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
+import { Link, router, useLocalSearchParams } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
-  Alert,
+  ActivityIndicator,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -9,20 +11,68 @@ import {
   View,
 } from "react-native";
 import { useUser } from "@/contexts/user-context";
+import { useGoogleAuth } from "@/services/google";
+import { useInAppAlert } from "@/components/in-app-alert";
+
+const MIN_PASSWORD_LENGTH = 8;
 
 export default function RegisterScreen() {
-  const { setProfile } = useUser();
+  const { setProfile, applyAuthPayload } = useUser();
+  const { notify, AlertHost } = useInAppAlert();
+
+  // Downstream onboarding screens may bounce back here with
+  // ?emailExists=1&email=... when the backend rejects the registration
+  // with "Email already registered". We pre-fill the email and pop the
+  // in-app modal so the user knows what happened — without any layout /
+  // design change on the form itself.
+  const params = useLocalSearchParams();
+  const initialEmail =
+    typeof params?.email === "string" ? params.email : "";
+  const initialEmailExists = String(params?.emailExists || "") === "1";
+
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
+  const [location, setLocation] = useState("");
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
+  const [googleSubmitting, setGoogleSubmitting] = useState(false);
+  const { request: googleRequest, signIn: googleSignIn } = useGoogleAuth();
+
+  // Surface the "already registered" message via the in-app modal once on
+  // mount when we land here from a bounce-back.
+  const announcedRef = useRef(false);
+  useEffect(() => {
+    if (initialEmailExists && !announcedRef.current) {
+      announcedRef.current = true;
+      notify(
+        "This email is registered",
+        "Try to login with the same email instead of creating a new account.",
+        { tone: "error" },
+      );
+    }
+  }, [initialEmailExists, notify]);
+
+  // Inline hint shown directly under the password field. Only appears while
+  // the user has typed at least one character and it's still too short — so
+  // we don't yell at someone before they've started typing.
+  const passwordTooShort =
+    password.length > 0 && password.length < MIN_PASSWORD_LENGTH;
 
   const handleSignUp = () => {
-    if (!firstName.trim() || !lastName.trim() || !email.trim() || !password) {
-      Alert.alert(
+    if (!firstName.trim() || !lastName.trim() || !email.trim() || !password || !location.trim()) {
+      notify(
         "Missing information",
-        "Please fill in your name, email and password.",
+        "Please fill in your name, location, email and password.",
+        { tone: "error" },
+      );
+      return;
+    }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      notify(
+        "Short password",
+        `It must have at least ${MIN_PASSWORD_LENGTH} characters.`,
+        { tone: "error" },
       );
       return;
     }
@@ -31,12 +81,68 @@ export default function RegisterScreen() {
       lastName: lastName.trim(),
       email: email.trim(),
       phone: phone.trim(),
+      location: location.trim(),
     });
-    router.push("/role-section");
+    router.push({
+      pathname: "/role-section",
+      params: {
+        email: email.trim(),
+        password,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        phone: phone.trim(),
+        location: location.trim(),
+      },
+    });
+  };
+
+  const handleGoogle = async () => {
+    if (googleSubmitting) return;
+    setGoogleSubmitting(true);
+    try {
+      // For brand-new Google users we don't know their role yet — let the
+      // user choose it on the role-selection screen, then convert later.
+      const payload = await googleSignIn();
+      applyAuthPayload(payload);
+      const backendRole = payload?.user?.role;
+      if (backendRole === "teacher") {
+        if (payload?.user && !payload.user.teacher_id) {
+          router.replace("/language-select-tutor");
+        } else {
+          router.replace("/tutor-dashboard");
+        }
+      } else if (backendRole === "admin") {
+        router.replace("/admin-dashboard");
+      } else {
+        router.replace("/student-dashboard");
+      }
+    } catch (e) {
+      if (!/cancel/i.test(e?.message || "")) {
+        notify("Google sign-in failed", e.message || "Please try again.", {
+          tone: "error",
+        });
+      }
+    } finally {
+      setGoogleSubmitting(false);
+    }
   };
 
   return (
-    <View style={styles.container}>
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.container}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+    >
+      {/* Small back button — returns to the Log in screen. */}
+      <TouchableOpacity
+        style={styles.backBtn}
+        onPress={() => router.replace("/login")}
+        accessibilityRole="button"
+      >
+        <Ionicons name="chevron-back" size={20} color="#FFFBFA" />
+      </TouchableOpacity>
+
       <Text style={styles.header}>Sign Up</Text>
 
       <Text style={styles.title}>Create Your Account</Text>
@@ -69,6 +175,14 @@ export default function RegisterScreen() {
 
       <TextInput
         style={styles.input}
+        placeholder="Location (city or country)"
+        placeholderTextColor="#DD8153"
+        value={location}
+        onChangeText={setLocation}
+      />
+
+      <TextInput
+        style={styles.input}
         placeholder="Email Address"
         placeholderTextColor="#DD8153"
         autoCapitalize="none"
@@ -78,13 +192,19 @@ export default function RegisterScreen() {
       />
 
       <TextInput
-        style={styles.input}
-        placeholder="Password"
+        style={[styles.input, passwordTooShort && styles.inputError]}
+        placeholder={`Password (min ${MIN_PASSWORD_LENGTH} chars)`}
         placeholderTextColor="#DD8153"
         secureTextEntry
         value={password}
         onChangeText={setPassword}
       />
+      {passwordTooShort ? (
+        <Text style={styles.passwordHint}>
+          Short password. It must have at least {MIN_PASSWORD_LENGTH} characters
+          ({password.length}/{MIN_PASSWORD_LENGTH}).
+        </Text>
+      ) : null}
 
       <TouchableOpacity style={styles.signupBtn} onPress={handleSignUp}>
         <Text style={styles.signupText}>Sign Up</Text>
@@ -92,8 +212,16 @@ export default function RegisterScreen() {
 
       <View style={styles.divider} />
 
-      <TouchableOpacity style={styles.google}>
-        <Text style={styles.googleText}>Sign Up with Google</Text>
+      <TouchableOpacity
+        style={[styles.google, (googleSubmitting || !googleRequest) && { opacity: 0.7 }]}
+        disabled={googleSubmitting || !googleRequest}
+        onPress={handleGoogle}
+      >
+        {googleSubmitting ? (
+          <ActivityIndicator color="#28221B" />
+        ) : (
+          <Text style={styles.googleText}>Sign Up with Google</Text>
+        )}
       </TouchableOpacity>
 
       <Text style={styles.footerText}>Already have an account?</Text>
@@ -103,17 +231,38 @@ export default function RegisterScreen() {
           <Text style={styles.loginButtonText}>Log in</Text>
         </TouchableOpacity>
       </Link>
-    </View>
+
+      <AlertHost />
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  scroll: {
     flex: 1,
     backgroundColor: "#FFFBFA",
-    padding: 20,
+  },
+  container: {
+    flexGrow: 1,
+    backgroundColor: "#FFFBFA",
+    paddingHorizontal: 20,
+    paddingTop: 40,
+    paddingBottom: 40,
     alignItems: "center",
     justifyContent: "center",
+  },
+
+  backBtn: {
+    position: "absolute",
+    top: 16,
+    left: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#FF9E6D",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2,
   },
 
   header: {
@@ -152,6 +301,21 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit",
   },
 
+  inputError: {
+    borderColor: "#DD8153",
+    borderWidth: 1.5,
+  },
+
+  passwordHint: {
+    width: "100%",
+    marginTop: -8,
+    marginBottom: 12,
+    paddingLeft: 18,
+    fontFamily: "Outfit",
+    fontSize: 12,
+    color: "#DD8153",
+  },
+
   signupBtn: {
     width: "100%",
     backgroundColor: "#FF9E6D",
@@ -164,6 +328,9 @@ const styles = StyleSheet.create({
   signupText: {
     color: "#FFFBFA",
     fontFamily: "Outfit",
+    fontSize: 16,
+    fontWeight: "700",
+    letterSpacing: 0.3,
   },
 
   divider: {

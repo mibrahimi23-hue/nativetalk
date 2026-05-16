@@ -1,8 +1,10 @@
-import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useState } from "react";
+﻿import { Ionicons } from "@expo/vector-icons";
+import { router, useLocalSearchParams } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Modal,
   StyleSheet,
   Text,
   TextInput,
@@ -10,12 +12,56 @@ import {
   View,
 } from "react-native";
 import { safeBack } from "@/hooks/use-safe-back";
+import { getStudentProfile } from "@/services/profile";
+import { createReview } from "@/services/reviews";
+import { listMySessions } from "@/services/sessions";
 
 const GRADES = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"];
+// Rough mapping from letter grade to 1-5 star rating used by backend.
+const GRADE_TO_RATING = {
+  "A+": 5, A: 5, "A-": 4,
+  "B+": 4, B: 3, "B-": 3,
+  "C+": 2, C: 2, "C-": 1,
+};
 
 export default function WriteReview() {
+  const { sessionId } = useLocalSearchParams();
   const [gradeIndex, setGradeIndex] = useState(1);
   const [text, setText] = useState("");
+  const [session, setSession] = useState(null);
+  const [studentName, setStudentName] = useState("Student");
+  const [submitting, setSubmitting] = useState(false);
+  const [sentVisible, setSentVisible] = useState(false);
+  const dismissTimer = useRef(null);
+
+  useEffect(() => () => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const sessions = await listMySessions("completed");
+        const target = sessionId
+          ? sessions.find((s) => String(s.id) === String(sessionId))
+          : sessions.find((s) => !s.teacher_review_done);
+        setSession(target || null);
+        if (target?.student_id) {
+          try {
+            const student = await getStudentProfile(target.student_id);
+            setStudentName(student?.full_name || "Student");
+          } catch {
+            setStudentName("Student");
+          }
+        } else {
+          setStudentName("Student");
+        }
+      } catch {
+        setSession(null);
+        setStudentName("Student");
+      }
+    })();
+  }, [sessionId]);
 
   const grade = GRADES[gradeIndex];
 
@@ -28,7 +74,7 @@ export default function WriteReview() {
     });
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!text.trim()) {
       Alert.alert(
         "Write something",
@@ -36,11 +82,31 @@ export default function WriteReview() {
       );
       return;
     }
-    Alert.alert(
-      "Review sent",
-      `Grade: ${grade}\n\n${text.trim()}`,
-      [{ text: "OK", onPress: () => router.replace("/tutor-dashboard") }],
-    );
+    if (!session) {
+      Alert.alert("No completed session", "You don't have any session ready to review.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await createReview({
+        session_id: session.id,
+        role: "teacher",
+        rating: GRADE_TO_RATING[grade] || 3,
+        comment: text.trim(),
+      });
+      // Show the in-app success modal briefly, then auto-route back to the
+      // tutor dashboard. Keeps the confirmation inside the design system
+      // rather than relying on the native Alert popup.
+      setSentVisible(true);
+      dismissTimer.current = setTimeout(() => {
+        setSentVisible(false);
+        router.replace("/tutor-dashboard");
+      }, 1500);
+    } catch (e) {
+      Alert.alert("Could not submit", e.message || "Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -88,7 +154,7 @@ export default function WriteReview() {
 
       <Text style={styles.label}>Write a review for:</Text>
 
-      <Text style={styles.user}>Marie Curie · Just now</Text>
+      <Text style={styles.user}>{studentName} - Just now</Text>
 
       <TextInput
         style={styles.textArea}
@@ -99,9 +165,31 @@ export default function WriteReview() {
         multiline
       />
 
-      <TouchableOpacity style={styles.btn} onPress={handleSend}>
-        <Text style={styles.btnText}>Send</Text>
+      <TouchableOpacity
+        style={[styles.btn, submitting && { opacity: 0.7 }]}
+        disabled={submitting}
+        onPress={handleSend}
+      >
+        {submitting ? (
+          <ActivityIndicator color="#FFFBFA" />
+        ) : (
+          <Text style={styles.btnText}>Send</Text>
+        )}
       </TouchableOpacity>
+
+      <Modal visible={sentVisible} transparent animationType="fade">
+        <View style={styles.sentOverlay}>
+          <View style={styles.sentCard}>
+            <View style={styles.sentIcon}>
+              <Ionicons name="checkmark" size={36} color="#FF9E6D" />
+            </View>
+            <Text style={styles.sentTitle}>Review sent</Text>
+            <Text style={styles.sentText}>
+              The student will see your review on their dashboard.
+            </Text>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -188,7 +276,7 @@ const styles = StyleSheet.create({
   user: {
     fontFamily: "Outfit",
     fontSize: 12,
-    color: "#777",
+    color: "#7E6D66",
     marginBottom: 14,
   },
 
@@ -220,5 +308,44 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#FFFBFA",
     fontWeight: "600",
+  },
+
+  sentOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(40, 34, 27, 0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 28,
+  },
+  sentCard: {
+    width: "100%",
+    backgroundColor: "#FFFBFA",
+    borderRadius: 20,
+    paddingHorizontal: 24,
+    paddingVertical: 26,
+    alignItems: "center",
+  },
+  sentIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#FFF1E8",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  sentTitle: {
+    fontFamily: "Domine",
+    fontSize: 18,
+    color: "#28221B",
+    marginBottom: 6,
+    textAlign: "center",
+  },
+  sentText: {
+    fontFamily: "Outfit",
+    fontSize: 12,
+    color: "#7E6D66",
+    textAlign: "center",
+    lineHeight: 17,
   },
 });

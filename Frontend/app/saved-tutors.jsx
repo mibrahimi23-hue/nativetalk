@@ -1,6 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Image,
   ScrollView,
   StyleSheet,
@@ -11,47 +13,55 @@ import {
 import { StudentBottomNav } from "@/components/student-bottom-nav";
 import { useUser } from "@/contexts/user-context";
 import { useSafeBack } from "@/hooks/use-safe-back";
+import { getTutor } from "@/services/tutors";
+import { buildMediaUrl } from "@/services/api";
+import { findLanguageById } from "@/constants/languages";
 
-const TUTORS = [
-  {
-    id: 1,
-    name: "Maria Gonzalez",
-    language: "Spanish",
-    level: "B2",
-    price: "$20/hr",
-    image: "https://images.unsplash.com/photo-1544717305-2782549b5136",
-  },
-  {
-    id: 2,
-    name: "Kenji Tanaka",
-    language: "Italian",
-    level: "A2",
-    price: "$15/hr",
-    image: "https://images.unsplash.com/photo-1522202176988-66273c2fd55f",
-  },
-  {
-    id: 3,
-    name: "Sophie Laurent",
-    language: "French",
-    level: "B1",
-    price: "$18/hr",
-    image: "https://images.unsplash.com/photo-1517841905240-472988babdf9",
-  },
-  {
-    id: 4,
-    name: "Hans Müller",
-    language: "German",
-    level: "C1",
-    price: "$22/hr",
-    image: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e",
-  },
-];
+const AVATAR_COLORS = ["#E8C9B6", "#C7B6A6", "#D9C2B3", "#B6CFD2", "#FFC09F", "#E0BAA5"];
+
+function initialsOf(name) {
+  if (!name) return "?";
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+}
+
+function colorForName(name) {
+  if (!name) return AVATAR_COLORS[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+}
 
 export default function SavedTutors() {
   const { savedTutorIds, toggleSavedTutor } = useUser();
   const safeBack = useSafeBack();
+  const [tutors, setTutors] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const savedTutors = TUTORS.filter((t) => savedTutorIds.includes(t.id));
+  const load = useCallback(async () => {
+    if (!savedTutorIds.length) {
+      setTutors([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const result = await Promise.all(
+      savedTutorIds.map((id) => getTutor(id).catch(() => null))
+    );
+    setTutors(result.filter(Boolean));
+    setLoading(false);
+  }, [savedTutorIds]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
     <View style={styles.container}>
@@ -67,7 +77,9 @@ export default function SavedTutors() {
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
       >
-        {savedTutors.length === 0 ? (
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 24 }} />
+        ) : tutors.length === 0 ? (
           <View style={styles.emptyBox}>
             <Ionicons name="bookmark-outline" size={32} color="#FF9E6D" />
             <Text style={styles.emptyTitle}>No saved tutors yet</Text>
@@ -84,35 +96,60 @@ export default function SavedTutors() {
         ) : (
           <>
             <Text style={styles.count}>
-              {savedTutors.length} tutor{savedTutors.length === 1 ? "" : "s"} saved
+              {tutors.length} tutor{tutors.length === 1 ? "" : "s"} saved
             </Text>
-            {savedTutors.map((tutor) => (
-              <TouchableOpacity
-                key={tutor.id}
-                style={styles.row}
-                onPress={() =>
-                  router.push({
-                    pathname: "/tutor-profile-student",
-                    params: { tutorId: String(tutor.id) },
-                  })
-                }
-              >
-                <Image source={{ uri: tutor.image }} style={styles.avatar} />
-                <View style={styles.rowBody}>
-                  <Text style={styles.name}>{tutor.name}</Text>
-                  <Text style={styles.meta}>
-                    {tutor.language} {tutor.level} · {tutor.price}
-                  </Text>
-                </View>
+            {tutors.map((tutor) => {
+              const language = findLanguageById(tutor.language_id);
+              const photoUrl = buildMediaUrl(tutor.profile_photo);
+              const price =
+                tutor.hourly_rate !== null && tutor.hourly_rate !== undefined
+                  ? ` · €${Number(tutor.hourly_rate).toFixed(0)}/hr`
+                  : "";
+              return (
                 <TouchableOpacity
-                  hitSlop={8}
-                  onPress={() => toggleSavedTutor(tutor.id)}
-                  style={styles.removeBtn}
+                  key={tutor.id}
+                  style={styles.row}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/tutor-profile-student",
+                      params: { tutorId: String(tutor.id) },
+                    })
+                  }
                 >
-                  <Ionicons name="bookmark" size={20} color="#FF9E6D" />
+                  {photoUrl ? (
+                    <Image source={{ uri: photoUrl }} style={styles.avatar} />
+                  ) : (
+                    <View
+                      style={[
+                        styles.avatar,
+                        {
+                          backgroundColor: colorForName(tutor.full_name),
+                          alignItems: "center",
+                          justifyContent: "center",
+                        },
+                      ]}
+                    >
+                      <Text style={styles.avatarInitials}>
+                        {initialsOf(tutor.full_name)}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={styles.rowBody}>
+                    <Text style={styles.name}>{tutor.full_name}</Text>
+                    <Text style={styles.meta}>
+                      {(language?.name || tutor.language_name || "")} {tutor.max_level || ""}{price}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    hitSlop={8}
+                    onPress={() => toggleSavedTutor(tutor.id)}
+                    style={styles.removeBtn}
+                  >
+                    <Ionicons name="bookmark" size={20} color="#FF9E6D" />
+                  </TouchableOpacity>
                 </TouchableOpacity>
-              </TouchableOpacity>
-            ))}
+              );
+            })}
           </>
         )}
       </ScrollView>
@@ -159,7 +196,7 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#FFFBFA",
     borderRadius: 14,
     padding: 12,
     marginBottom: 10,
@@ -175,6 +212,12 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
+  },
+  avatarInitials: {
+    fontFamily: "Domine",
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#28221B",
   },
 
   rowBody: {

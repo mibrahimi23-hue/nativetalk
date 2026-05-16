@@ -1,9 +1,80 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
+import { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { safeBack } from "@/hooks/use-safe-back";
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { getAdminTransaction } from "@/services/admin";
+
+function splitName(full) {
+  if (!full) return { first: "", last: "" };
+  const parts = String(full).trim().split(/\s+/);
+  if (parts.length === 1) return { first: parts[0], last: "" };
+  return { first: parts[0], last: parts.slice(1).join(" ") };
+}
 
 export default function AdminTransactionDetails() {
+  const { transactionId } = useLocalSearchParams();
+  const [transaction, setTransaction] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!transactionId) {
+      setLoading(false);
+      return;
+    }
+    (async () => {
+      try {
+        const data = await getAdminTransaction(transactionId);
+        if (!cancelled) setTransaction(data);
+      } catch {
+        if (!cancelled) setTransaction(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [transactionId]);
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.center]}>
+        <ActivityIndicator color="#FF9E6D" />
+      </View>
+    );
+  }
+
+  if (!transaction) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => safeBack()}>
+            <Ionicons name="chevron-back" size={22} color="#FFFBFA" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Transaction Page</Text>
+          <View style={{ width: 30 }} />
+        </View>
+        <Text style={styles.empty}>Transaction not found.</Text>
+      </View>
+    );
+  }
+
+  const studentEmail = transaction.student_email || "—";
+  const teacherEmail = transaction.teacher_email || "—";
+  const balance = `€${Number(transaction.teacher_balance || 0).toFixed(2)}`;
+  const amount = `€${Number(transaction.amount || 0).toFixed(2)}`;
+  const from = splitName(transaction.student_name);
+  const to = splitName(transaction.teacher_name);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -17,15 +88,18 @@ export default function AdminTransactionDetails() {
 
       <Text style={styles.sectionTitle}>Student Account</Text>
 
-      <TouchableOpacity
-        onPress={() => Alert.alert("Email", "elara.thornfield@gmail.com")}
-      >
-        <Text style={styles.info}>✉ Email: elara.thornfield@gmail.com</Text>
+      <TouchableOpacity onPress={() => Alert.alert("Email", studentEmail)}>
+        <Text style={styles.info}>✉ Email: {studentEmail}</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
         style={styles.row}
-        onPress={() => router.push("/admin-student-transaction-history")}
+        onPress={() =>
+          router.push({
+            pathname: "/admin-student-transaction-history",
+            params: { studentEmail, studentName: transaction.student_name || "" },
+          })
+        }
       >
         <Text style={styles.info}>☮ Transaction history</Text>
         <Ionicons name="chevron-forward" size={18} color="#28221B" />
@@ -35,19 +109,22 @@ export default function AdminTransactionDetails() {
 
       <Text style={styles.sectionTitle}>Tutor Account</Text>
 
-      <TouchableOpacity
-        onPress={() => Alert.alert("Email", "orion.starling@school.edu")}
-      >
-        <Text style={styles.info}>✉ Email: orion.starling@school.edu</Text>
+      <TouchableOpacity onPress={() => Alert.alert("Email", teacherEmail)}>
+        <Text style={styles.info}>✉ Email: {teacherEmail}</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => Alert.alert("Balance", "$1200")}>
-        <Text style={styles.info}>☮ Balance: $1200</Text>
+      <TouchableOpacity onPress={() => Alert.alert("Balance", balance)}>
+        <Text style={styles.info}>☮ Balance: {balance}</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
         style={styles.row}
-        onPress={() => router.push("/admin-tutor-transaction-history")}
+        onPress={() =>
+          router.push({
+            pathname: "/admin-tutor-transaction-history",
+            params: { teacherEmail, teacherName: transaction.teacher_name || "" },
+          })
+        }
       >
         <Text style={styles.info}>☮ Transaction history</Text>
         <Ionicons name="chevron-forward" size={18} color="#28221B" />
@@ -57,21 +134,31 @@ export default function AdminTransactionDetails() {
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Transaction details</Text>
-        <Text style={styles.amount}>$150</Text>
+        <Text style={styles.amount}>{amount}</Text>
 
         <View style={styles.pillRow}>
           <TouchableOpacity
             style={styles.pill}
-            onPress={() => Alert.alert("From", "Elara Thornfield")}
+            onPress={() =>
+              Alert.alert("From", transaction.student_name || "—")
+            }
           >
-            <Text style={styles.pillText}>From: Elara{"\n"}Thornfield</Text>
+            <Text style={styles.pillText}>
+              From: {from.first}
+              {from.last ? `\n${from.last}` : ""}
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.pill}
-            onPress={() => Alert.alert("To", "Orion Starling")}
+            onPress={() =>
+              Alert.alert("To", transaction.teacher_name || "—")
+            }
           >
-            <Text style={styles.pillText}>To: Orion{"\n"}Starling</Text>
+            <Text style={styles.pillText}>
+              To: {to.first}
+              {to.last ? `\n${to.last}` : ""}
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -103,6 +190,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFBFA",
     paddingTop: 48,
     paddingHorizontal: 22,
+  },
+  center: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  empty: {
+    fontFamily: "Outfit",
+    fontSize: 13,
+    color: "#7E6D66",
+    textAlign: "center",
+    marginTop: 40,
   },
   header: {
     flexDirection: "row",

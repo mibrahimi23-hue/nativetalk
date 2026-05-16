@@ -1,8 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { safeBack } from "@/hooks/use-safe-back";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -12,54 +14,141 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useUser } from "@/contexts/user-context";
+import { addAvailability, deleteAvailability, getTutorAvailability } from "@/services/tutors";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_INDEX = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+const DAY_NAME = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-const TIME_SLOTS = [
-  "9:00 AM to 11:00 AM",
-  "11:00 AM to 1:00 PM",
-  "1:00 PM to 3:00 PM",
-  "3:00 PM to 5:00 PM",
-  "5:00 PM to 7:00 PM",
-  "7:00 PM to 9:00 PM",
-];
+// One-hour slots across the full 24-hour day, labelled in 24h notation
+// (00:00–01:00 … 23:00–00:00). Tutors anywhere in the world can pick the
+// hour that suits them — there's no business reason to cap the day at 9–9.
+// The last slot stores 23:59:59 as the end (since the SQL TIME column
+// can't represent 24:00:00) while still presenting "00:00" in the label.
+const TIME_SLOTS = Array.from({ length: 24 }, (_, i) => {
+  const startHH = String(i).padStart(2, "0");
+  const endHH = String((i + 1) % 24).padStart(2, "0");
+  const isLastHour = i === 23;
+  return {
+    label: `${startHH}:00 to ${endHH}:00`,
+    start: `${startHH}:00:00`,
+    end: isLastHour ? "23:59:59" : `${endHH}:00:00`,
+  };
+});
+
+function timeRangeLabel(start, end) {
+  const fmt = (t) => {
+    const [hh, mm] = String(t).split(":");
+    return `${String(Number(hh)).padStart(2, "0")}:${mm}`;
+  };
+  // The 23:00→00:00 slot is stored as 23:00:00–23:59:59 (no 24:00:00 in
+  // SQL TIME) — render it back as 23:00 → 00:00 so the tutor sees the
+  // hour they actually selected.
+  const endStr = String(end);
+  const endLabel = endStr.startsWith("23:59") ? "00:00" : fmt(end);
+  return `${fmt(start)} to ${endLabel}`;
+}
 
 export default function Availability() {
-  const { level } = useLocalSearchParams();
+  const params = useLocalSearchParams();
+  const { profile, user } = useUser();
+  const teacherId = user?.teacher_id;
 
   const [day, setDay] = useState(null);
-  const [time, setTime] = useState(null);
-  const [picker, setPicker] = useState(null); // 'day' | 'time' | null
-  const [slots, setSlots] = useState([
-    { id: 1, day: "Mon", time: "9:00 AM to 11:00 AM" },
-    { id: 2, day: "Tue", time: "1:00 PM to 3:00 PM" },
-    { id: 3, day: "Thu", time: "2:00 PM to 4:00 PM" },
-  ]);
+  const [timeSlot, setTimeSlot] = useState(null);
+  const [picker, setPicker] = useState(null);
+  const [slots, setSlots] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  const addSlot = () => {
-    if (!day || !time) return;
-    setSlots((prev) => [...prev, { id: Date.now(), day, time }]);
-    setDay(null);
-    setTime(null);
+  const timezone =
+    profile.timezone ||
+    user?.timezone ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone ||
+    "UTC";
+
+  const loadSlots = useCallback(async () => {
+    if (!teacherId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const data = await getTutorAvailability(teacherId);
+      setSlots(Array.isArray(data) ? data : []);
+    } catch {
+      setSlots([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [teacherId]);
+
+  useEffect(() => {
+    loadSlots();
+  }, [loadSlots]);
+
+  const addSlot = async () => {
+    if (!day || !timeSlot) return;
+    if (!teacherId) {
+      Alert.alert("Sign in needed", "Please sign in again as a tutor.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await addAvailability({
+        day_of_week: DAY_INDEX[day],
+        start_time: timeSlot.start,
+        end_time: timeSlot.end,
+        timezone,
+      });
+      setDay(null);
+      setTimeSlot(null);
+      await loadSlots();
+    } catch (e) {
+      Alert.alert("Could not add slot", e.message || "Please try another time.");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const removeSlot = (id) => {
-    setSlots((prev) => prev.filter((s) => s.id !== id));
+  const removeSlot = async (slotId) => {
+    setSlots((prev) => prev.filter((s) => s.id !== slotId));
+    try {
+      await deleteAvailability(slotId);
+    } catch {
+      await loadSlots();
+    }
   };
 
   const canContinue = slots.length > 0;
-  const options = picker === "day" ? DAYS : picker === "time" ? TIME_SLOTS : [];
+  const options =
+    picker === "day" ? DAYS : picker === "time" ? TIME_SLOTS.map((t) => t.label) : [];
 
   const choose = (val) => {
     if (picker === "day") setDay(val);
-    if (picker === "time") setTime(val);
+    if (picker === "time") {
+      const found = TIME_SLOTS.find((t) => t.label === val);
+      if (found) setTimeSlot(found);
+    }
     setPicker(null);
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.topBar}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => safeBack()}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() =>
+            // When the tutor is editing (no onboarding params), prefer
+            // routing straight back to the profile rather than retracing the
+            // navigation history. During onboarding `safeBack()` keeps the
+            // existing behaviour.
+            (params?.level || params?.fromOnboarding)
+              ? safeBack()
+              : router.replace("/profile")
+          }
+        >
           <Ionicons name="chevron-back" size={20} color="#FFFBFA" />
         </TouchableOpacity>
         <Text style={styles.title}>Set Availability</Text>
@@ -85,47 +174,76 @@ export default function Availability() {
           onPress={() => setPicker("time")}
           activeOpacity={0.7}
         >
-          <Text style={[styles.selectText, !time && styles.placeholder]}>
-            {time || "Select Time"}
+          <Text style={[styles.selectText, !timeSlot && styles.placeholder]}>
+            {timeSlot?.label || "Select Time"}
           </Text>
           <Ionicons name="chevron-down" size={18} color="#7E6D66" />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.button, (!day || !time) && styles.buttonDisabled]}
-          disabled={!day || !time}
+          style={[
+            styles.button,
+            (!day || !timeSlot || saving) && styles.buttonDisabled,
+          ]}
+          disabled={!day || !timeSlot || saving}
           onPress={addSlot}
         >
-          <Text style={styles.buttonText}>Save Availability +</Text>
+          {saving ? (
+            <ActivityIndicator color="#FFFBFA" />
+          ) : (
+            <Text style={styles.buttonText}>Save Availability +</Text>
+          )}
         </TouchableOpacity>
 
-        {slots.map((slot) => (
-          <View key={slot.id} style={styles.item}>
-            <Text style={styles.itemText}>
-              {slot.day} - {slot.time}
-            </Text>
-            <TouchableOpacity onPress={() => removeSlot(slot.id)}>
-              <Text style={styles.close}>X</Text>
-            </TouchableOpacity>
-          </View>
-        ))}
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 20 }} />
+        ) : (
+          slots.map((slot) => (
+            <View key={slot.id} style={styles.item}>
+              <Text style={styles.itemText}>
+                {DAY_NAME[slot.day_of_week]} -{" "}
+                {timeRangeLabel(slot.start_time, slot.end_time)}
+              </Text>
+              <TouchableOpacity onPress={() => removeSlot(slot.id)}>
+                <Text style={styles.close}>X</Text>
+              </TouchableOpacity>
+            </View>
+          ))
+        )}
 
-        {slots.length === 0 && (
+        {!loading && slots.length === 0 && (
           <Text style={styles.emptyText}>
             No availability added yet. Add a day and time above.
           </Text>
         )}
       </ScrollView>
 
-      <TouchableOpacity
-        style={[styles.continueBtn, !canContinue && styles.continueBtnDisabled]}
-        disabled={!canContinue}
-        onPress={() =>
-          router.push({ pathname: "/pricing-plans", params: { level } })
-        }
-      >
-        <Text style={styles.continueText}>Continue</Text>
-      </TouchableOpacity>
+      {/*
+        Two entry points for this screen:
+          - During onboarding, the previous step pushes here with params
+            (e.g. `level`) and the tutor continues forward to /pricing-plans.
+          - From the profile "Edit availability" link, no params are set —
+            the tutor only wants to add/remove slots, so we show a "Done"
+            button that takes them back to the tutor dashboard.
+      */}
+      {(params?.level || params?.fromOnboarding) ? (
+        <TouchableOpacity
+          style={[styles.continueBtn, !canContinue && styles.continueBtnDisabled]}
+          disabled={!canContinue}
+          onPress={() =>
+            router.push({ pathname: "/pricing-plans", params: { ...params } })
+          }
+        >
+          <Text style={styles.continueText}>Continue</Text>
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity
+          style={styles.continueBtn}
+          onPress={() => router.replace("/tutor-dashboard")}
+        >
+          <Text style={styles.continueText}>Done</Text>
+        </TouchableOpacity>
+      )}
 
       <Modal
         visible={picker !== null}
@@ -142,7 +260,7 @@ export default function Availability() {
               {options.map((opt) => {
                 const selected =
                   (picker === "day" && opt === day) ||
-                  (picker === "time" && opt === time);
+                  (picker === "time" && opt === timeSlot?.label);
                 return (
                   <TouchableOpacity
                     key={opt}
@@ -216,7 +334,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   placeholder: {
-    color: "#888",
+    color: "#7E6D66",
   },
 
   button: {

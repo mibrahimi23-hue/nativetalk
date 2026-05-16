@@ -27,6 +27,7 @@ from app.core.logging import get_logger
 
 logger = get_logger("nativetalk.daily")
 settings = get_settings()
+EJECT_ON_EXPIRY_FIELD = "eject_at_" + "token_exp"
 
 
 def _require_key() -> str:
@@ -89,6 +90,7 @@ class DailyClient:
                 "exp": int(time.time()) + exp_seconds,
                 "enable_screenshare": False,
                 "enable_chat": True,
+                "enable_knocking": True,
                 "start_video_off": False,
                 "start_audio_off": False,
                 "max_participants": 2,
@@ -106,6 +108,17 @@ class DailyClient:
         logger.info("Daily room created: %s  url=%s", data.get("name"), data.get("url"))
         return data
 
+    def delete_room(self, room_name: str) -> None:
+        """Delete a Daily room so every participant is removed from the call."""
+        with httpx.Client(timeout=10) as client:
+            r = client.delete(
+                f"{self._base}/rooms/{room_name}",
+                headers=self._headers(),
+            )
+        if r.status_code not in (200, 202, 204, 404):
+            _raise_daily_error(r)
+        logger.info("Daily room deleted: %s", room_name)
+
     # ── Meeting tokens ───────────────────────────────────────────────────────
 
     def create_meeting_token(
@@ -115,21 +128,32 @@ class DailyClient:
         user_name: str,
         is_owner: bool = False,
         exp_seconds: int = 7200,
+        nbf_seconds: int = 0,
     ) -> str:
         """
         Create a short-lived meeting token for a single participant.
+
+        Security properties applied:
+        - `user_id` bound to the token (Daily.co enforces identity)
+        - `eject_at_token_exp: true` → user is auto-kicked when token expires
+        - `nbf` (not-before) → token is invalid before the session window opens
+        - `exp` → token is invalid after the session ends
 
         React Native joins with:
           call.join({ url: room_url, token: meeting_token })
         """
         import time
+        now = int(time.time())
         payload: Dict[str, Any] = {
             "properties": {
                 "room_name": room_name,
                 "user_id": user_id,
                 "user_name": user_name,
                 "is_owner": is_owner,
-                "exp": int(time.time()) + exp_seconds,
+                "exp": now + exp_seconds,
+                "nbf": now + nbf_seconds,          # not usable before this time
+                EJECT_ON_EXPIRY_FIELD: True,
+                "enable_recording": False,
             }
         }
         with httpx.Client(timeout=10) as client:

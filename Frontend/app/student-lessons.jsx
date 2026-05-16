@@ -1,7 +1,11 @@
-import { Ionicons } from "@expo/vector-icons";
+﻿import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,22 +15,12 @@ import {
 import { StudentBottomNav } from "@/components/student-bottom-nav";
 import { useUser } from "@/contexts/user-context";
 import { safeBack } from "@/hooks/use-safe-back";
+import { buildMediaUrl } from "@/services/api";
+import { listMyLessons } from "@/services/lessons";
+import { listMySessions } from "@/services/sessions";
+import { listMaterials } from "@/services/materials";
 
-const TABS = ["A1", "A2", "B1", "B2"];
-
-const COMPLETED_LESSONS = [
-  { title: "Lesson 1: Basic Greetings", level: "A1" },
-  { title: "Lesson 2: Phrases", level: "A1" },
-  { title: "Lesson 3: Cafe Conversation", level: "A2" },
-  { title: "Lesson 4: Travel Vocabulary", level: "A2" },
-];
-
-const UPCOMING_LESSONS = [
-  { title: "Lesson 5: Common Phrases", date: "10/02", time: "5:00 PM", joinable: true, level: "A1" },
-  { title: "Lesson 6: Numbers", date: "10/07", time: "7:00 PM", level: "A1" },
-  { title: "Lesson 7: Directions", date: "10/07", time: "8:00 PM", level: "A2" },
-  { title: "Lesson 8: Past Tense", date: "10/12", time: "6:00 PM", level: "B1" },
-];
+const TABS = ["A1", "A2", "B1", "B2", "C1", "C2"];
 
 const nextState = (s) =>
   s === "preview" ? "expanded" : s === "expanded" ? "collapsed" : "preview";
@@ -37,15 +31,80 @@ const labelFor = (s, n) =>
 const visibleSlice = (s, list) =>
   s === "collapsed" ? [] : s === "expanded" ? list : list.slice(0, 3);
 
+function formatDateTime(dateString) {
+  const d = new Date(dateString);
+  if (Number.isNaN(d.getTime())) return { date: "", time: "" };
+  return {
+    date: `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`,
+    time: d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+  };
+}
+
+function isJoinable(session) {
+  if (session.status !== "confirmed") return false;
+  const d = new Date(session.scheduled_at);
+  if (Number.isNaN(d.getTime())) return false;
+  const now = Date.now();
+  const opens = d.getTime() - 15 * 60 * 1000;
+  const closes = d.getTime() + (session.duration_minutes || 60 + 15) * 60 * 1000;
+  return now >= opens && now <= closes;
+}
+
 export default function StudentLessons() {
-  const { materials } = useUser();
+  const { profile } = useUser();
   const [activeTab, setActiveTab] = useState("A1");
   const [completedState, setCompletedState] = useState("preview");
   const [upcomingState, setUpcomingState] = useState("preview");
   const [materialsState, setMaterialsState] = useState("preview");
+  const [sessions, setSessions] = useState([]);
+  const [lessons, setLessons] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const completedForLevel = COMPLETED_LESSONS.filter((l) => l.level === activeTab);
-  const upcomingForLevel = UPCOMING_LESSONS.filter((l) => l.level === activeTab);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [s, l, m] = await Promise.all([
+        listMySessions().catch(() => []),
+        listMyLessons({ level: activeTab }).catch(() => []),
+        listMaterials({ level: activeTab }).catch(() => []),
+      ]);
+      setSessions(Array.isArray(s) ? s : []);
+      setLessons(Array.isArray(l) ? l : []);
+      setMaterials(Array.isArray(m) ? m : []);
+    } finally {
+      setLoading(false);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const lessonNotesForLevel = useMemo(
+    () =>
+      lessons
+        .filter((l) => l.kind === "lesson_note" && l.level === activeTab)
+        .sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0)),
+    [lessons, activeTab]
+  );
+  const completedForLevel = useMemo(
+    () => [
+      ...lessonNotesForLevel,
+      ...sessions.filter((s) => s.level === activeTab && s.status === "completed"),
+    ],
+    [sessions, activeTab, lessonNotesForLevel]
+  );
+  const upcomingForLevel = useMemo(
+    () =>
+      sessions
+        .filter(
+          (s) =>
+            s.level === activeTab && (s.status === "pending" || s.status === "confirmed")
+        )
+        .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at)),
+    [sessions, activeTab]
+  );
 
   const visibleCompleted = visibleSlice(completedState, completedForLevel);
   const visibleUpcoming = visibleSlice(upcomingState, upcomingForLevel);
@@ -53,6 +112,21 @@ export default function StudentLessons() {
 
   const noLessonsAtAll =
     completedForLevel.length === 0 && upcomingForLevel.length === 0;
+
+  const openMaterial = async (mat) => {
+    const url = buildMediaUrl(mat.download_url || mat.file_path);
+    if (!url) {
+      Alert.alert("No document", "This material doesn't have a file attached.");
+      return;
+    }
+    try {
+      const ok = await Linking.canOpenURL(url);
+      if (ok) await Linking.openURL(url);
+      else if (Platform.OS === "web") window.open(url, "_blank");
+    } catch {
+      if (Platform.OS === "web") window.open(url, "_blank");
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -80,7 +154,9 @@ export default function StudentLessons() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 100 }}
       >
-        {noLessonsAtAll ? (
+        {loading ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 24 }} />
+        ) : noLessonsAtAll ? (
           <View style={styles.emptyState}>
             <Ionicons name="book-outline" size={28} color="#A89080" />
             <Text style={styles.emptyStateTitle}>
@@ -100,19 +176,63 @@ export default function StudentLessons() {
               </Text>
             ) : (
               <>
-                {visibleCompleted.map((lesson) => (
-                  <TouchableOpacity
-                    key={lesson.title}
-                    style={styles.completedRow}
-                    onPress={() => router.push("/student-lesson-detail")}
-                  >
-                    <View style={styles.square} />
-                    <View>
-                      <Text style={styles.completedTitle}>{lesson.title}</Text>
-                      <Text style={styles.completedText}>Completed</Text>
+                {visibleCompleted.map((session) => {
+                  const { date, time } = formatDateTime(session.scheduled_at);
+                  const isLessonNote = session.kind === "lesson_note";
+                  const pendingReview =
+                    !isLessonNote && session.student_review_done === false;
+                  return (
+                    <View key={session.id} style={styles.completedRow}>
+                      <TouchableOpacity
+                        style={styles.completedMain}
+                        onPress={() =>
+                          router.push({
+                            pathname: "/student-lesson-detail",
+                            params: isLessonNote
+                              ? { lessonId: String(session.id) }
+                              : { sessionId: String(session.id) },
+                          })
+                        }
+                      >
+                        <View style={styles.square} />
+                        <View style={{ flex: 1 }}>
+                          {isLessonNote ? (
+                            <>
+                              <Text style={styles.completedTitle}>
+                                Lesson {session.lesson_number || 1}: {session.title}
+                              </Text>
+                              <Text style={styles.completedText}>Lesson content</Text>
+                            </>
+                          ) : (
+                            <>
+                              <Text style={styles.completedTitle}>
+                                {profile.language || "Language"} · {session.level}
+                              </Text>
+                              <Text style={styles.completedText}>
+                                {date} {time}
+                              </Text>
+                            </>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+
+                      {pendingReview ? (
+                        <TouchableOpacity
+                          style={styles.reviewChip}
+                          onPress={() =>
+                            router.push({
+                              pathname: "/student-write-review",
+                              params: { sessionId: String(session.id) },
+                            })
+                          }
+                        >
+                          <Ionicons name="star-outline" size={12} color="#FFFBFA" />
+                          <Text style={styles.reviewChipText}>Pending review</Text>
+                        </TouchableOpacity>
+                      ) : null}
                     </View>
-                  </TouchableOpacity>
-                ))}
+                  );
+                })}
 
                 {completedForLevel.length > 3 && (
                   <TouchableOpacity
@@ -142,37 +262,58 @@ export default function StudentLessons() {
               </Text>
             ) : (
               <>
-                {visibleUpcoming.map((lesson, index) =>
-                  index === 0 && lesson.joinable ? (
-                    <View key={lesson.title} style={styles.upcomingRow}>
+                {visibleUpcoming.map((session) => {
+                  const { date, time } = formatDateTime(session.scheduled_at);
+                  const joinable = isJoinable(session);
+                  return joinable ? (
+                    <View key={session.id} style={styles.upcomingRow}>
                       <TouchableOpacity
-                        onPress={() => router.push("/student-lesson-detail")}
+                        onPress={() =>
+                          router.push({
+                            pathname: "/student-lesson-detail",
+                            params: { sessionId: String(session.id) },
+                          })
+                        }
                       >
-                        <Text style={styles.lessonTitle}>{lesson.title}</Text>
+                        <Text style={styles.lessonTitle}>
+                          {profile.language || "Language"} · {session.level}
+                        </Text>
                         <Text style={styles.lessonTime}>
-                          {lesson.date} {lesson.time}
+                          {date} {time}
                         </Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={styles.joinBtn}
-                        onPress={() => router.push("/videocall")}
+                        onPress={() =>
+                          router.push({
+                            pathname: "/videocall",
+                            params: { sessionId: String(session.id) },
+                          })
+                        }
                       >
                         <Text style={styles.joinText}>Join</Text>
                       </TouchableOpacity>
                     </View>
                   ) : (
                     <TouchableOpacity
-                      key={lesson.title}
+                      key={session.id}
                       style={styles.lineLesson}
-                      onPress={() => router.push("/student-lesson-detail")}
+                      onPress={() =>
+                        router.push({
+                          pathname: "/student-lesson-detail",
+                          params: { sessionId: String(session.id) },
+                        })
+                      }
                     >
-                      <Text style={styles.lessonTitle}>{lesson.title}</Text>
+                      <Text style={styles.lessonTitle}>
+                        {profile.language || "Language"} · {session.level}
+                      </Text>
                       <Text style={styles.lessonTime}>
-                        {lesson.date} {lesson.time}
+                        {date} {time}
                       </Text>
                     </TouchableOpacity>
-                  ),
-                )}
+                  );
+                })}
 
                 {upcomingForLevel.length > 3 && (
                   <TouchableOpacity
@@ -192,7 +333,14 @@ export default function StudentLessons() {
 
                 <TouchableOpacity
                   style={styles.cancelBtn}
-                  onPress={() => router.push("/cancel-session-student")}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/cancel-session",
+                      params: upcomingForLevel[0]
+                        ? { sessionId: String(upcomingForLevel[0].id) }
+                        : {},
+                    })
+                  }
                 >
                   <Text style={styles.cancelText}>Cancel Upcoming lesson</Text>
                 </TouchableOpacity>
@@ -210,7 +358,7 @@ export default function StudentLessons() {
         {visibleMaterials.map((mat) => (
           <View key={mat.id} style={styles.materialRow}>
             <Text style={styles.materialTitle}>{mat.title}</Text>
-            <TouchableOpacity>
+            <TouchableOpacity onPress={() => openMaterial(mat)}>
               <Ionicons name="download-outline" size={20} color="#28221B" />
             </TouchableOpacity>
           </View>
@@ -272,7 +420,7 @@ const styles = StyleSheet.create({
   tabText: {
     fontFamily: "Outfit",
     fontSize: 13,
-    color: "#777",
+    color: "#7E6D66",
     paddingBottom: 7,
   },
 
@@ -295,6 +443,27 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: "#F0EDEA",
+  },
+  completedMain: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  reviewChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#FF9E6D",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    marginLeft: 8,
+  },
+  reviewChipText: {
+    fontFamily: "Outfit",
+    fontSize: 11,
+    color: "#FFFBFA",
+    fontWeight: "600",
   },
 
   square: {

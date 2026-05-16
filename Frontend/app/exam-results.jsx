@@ -1,16 +1,43 @@
-import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+﻿import { Ionicons } from "@expo/vector-icons";
+import { router, useLocalSearchParams } from "expo-router";
 import { safeBack } from "@/hooks/use-safe-back";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
-const results = [
-  { id: 1, subject: "Grammar", score: "67%" },
-  { id: 2, subject: "Reading", score: "79%" },
-  { id: 3, subject: "Writing", score: "85%" },
-  { id: 4, subject: "Listening", score: "72%" },
-];
-
 export default function ExamResults() {
+  // Real values flow in from /language-exam via the router params after the
+  // submit response. If they're missing (e.g. user lands here directly), the
+  // screen falls back to a neutral message instead of the four hard-coded
+  // section scores that used to live here.
+  const params = useLocalSearchParams();
+  const passed = String(params.passed || "") === "1";
+  const score = Number(params.score) || 0;
+  const total = Number(params.total) || 0;
+  const percentage = params.percentage
+    ? String(params.percentage)
+    : total > 0
+    ? `${Math.round((score / total) * 100)}%`
+    : "—";
+  // Backend sends the tutor's *granted* level — present on pass, empty on
+  // fail. On fail there is NO teaching level: the tutor must retake the
+  // exam before any level is granted.
+  const rawLevel = params.newLevel ? String(params.newLevel) : "";
+  const level = rawLevel || (passed ? "A2" : null);
+  const message =
+    params.message ||
+    (passed
+      ? `Huge congrats! You can now teach up to ${level || "the granted level"}.`
+      : `You didn't pass. You can't teach yet — try the exam again to unlock teaching.`);
+
+  const subjectRows = [
+    { id: "score", subject: "Score", value: `${score} / ${total}` },
+    { id: "percent", subject: "Percentage", value: percentage },
+    {
+      id: "status",
+      subject: "Result",
+      value: passed ? "Passed" : "Did not pass",
+    },
+  ];
+
   return (
     <View style={styles.wrapper}>
       {/* Header */}
@@ -24,39 +51,53 @@ export default function ExamResults() {
 
       <View style={styles.content}>
         {/* Congrats text */}
-        <Text style={styles.congratsText}>
-          Huge congrats! Seriously, reaching this level is a massive win. It's
-          one thing to just "get by" in a language, but it's a whole different
-          ballgame to actually nail the nuances and flow like a native speaker.
-        </Text>
+        <Text style={styles.congratsText}>{message}</Text>
 
         {/* Results */}
-        {results.map((result) => (
-          <View key={result.id} style={styles.resultRow}>
-            <Text style={styles.resultSubject}>{result.subject}</Text>
-            <Text style={styles.resultScore}>{result.score}</Text>
+        {subjectRows.map((row) => (
+          <View key={row.id} style={styles.resultRow}>
+            <Text style={styles.resultSubject}>{row.subject}</Text>
+            <Text style={styles.resultScore}>{row.value}</Text>
           </View>
         ))}
 
-        {/* Level */}
-        <Text style={styles.levelText}>
-          Language level you can teach:{"\n"}A2
-        </Text>
+        {/* Level — only when the tutor passed and a level was actually
+            granted. On failure we show a locked state instead so the
+            screen never advertises an A1/A2 that the user can't use. */}
+        {passed && level ? (
+          <Text style={styles.levelText}>
+            Language level you can teach:{"\n"}{level}
+          </Text>
+        ) : (
+          <Text style={styles.levelText}>
+            Language level you can teach:{"\n"}Locked — retake the exam
+          </Text>
+        )}
       </View>
 
-      {/* Bottom Button */}
+      {/* Bottom Button — Continue forward on pass, route back to the exam
+          itself on fail so the tutor can immediately retry. */}
       <View style={styles.bottomBtn}>
-        <TouchableOpacity
-          style={styles.continueBtn}
-          onPress={() =>
-            router.push({
-              pathname: "/availability",
-              params: { level: "A2" },
-            })
-          }
-        >
-          <Text style={styles.continueBtnText}>Continue with account</Text>
-        </TouchableOpacity>
+        {passed && level ? (
+          <TouchableOpacity
+            style={styles.continueBtn}
+            onPress={() =>
+              router.push({
+                pathname: "/availability",
+                params: { level },
+              })
+            }
+          >
+            <Text style={styles.continueBtnText}>Continue with account</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.continueBtn}
+            onPress={() => router.replace("/language-examination")}
+          >
+            <Text style={styles.continueBtnText}>Try the exam again</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -100,7 +141,7 @@ const styles = StyleSheet.create({
   },
   congratsText: {
     fontSize: 14,
-    color: "#555",
+    color: "#7E6D66",
     lineHeight: 22,
     marginBottom: 32,
   },
@@ -117,7 +158,7 @@ const styles = StyleSheet.create({
   },
   resultScore: {
     fontSize: 14,
-    color: "#777",
+    color: "#7E6D66",
   },
 
   // Level

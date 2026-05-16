@@ -1,8 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useMemo, useState } from "react";
+import { router, useLocalSearchParams } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
+  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
@@ -13,6 +13,14 @@ import {
   View,
 } from "react-native";
 import { safeBack } from "@/hooks/use-safe-back";
+import {
+  adminCreateExam,
+  adminGetExam,
+  adminUpdateExam,
+  listLanguages,
+} from "@/services/exams";
+import { LANGUAGES as STATIC_LANGUAGES } from "@/constants/languages";
+import { useInAppAlert } from "@/components/in-app-alert";
 
 const SECTIONS = [
   { id: "reading", label: "Reading", icon: "book-outline" },
@@ -22,11 +30,48 @@ const SECTIONS = [
 ];
 
 const LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
-const LANGUAGES = ["English", "Spanish", "German", "French", "Italian"];
 
 export default function AdminExamBuilder() {
-  const [language, setLanguage] = useState("English");
+  // In-app styled alerts (no more native "localhost:8081 says…" popups).
+  const { notify: notifyHook, confirmAction, AlertHost } = useInAppAlert();
+  // The original `notify(title, msg, onAfter)` callers pass an optional
+  // callback that should fire once the user dismisses the dialog. The
+  // hook's notify resolves a Promise — bridge the two API shapes here.
+  const notify = (title, message, onAfter) => {
+    const p = notifyHook(title, message);
+    if (onAfter) p.then(() => onAfter());
+    return p;
+  };
+
+  // `examId` is set when the screen is reached by tapping a card on the
+  // admin-exams list — that flips us into edit mode (prefill + PUT).
+  const { examId: examIdParam } = useLocalSearchParams();
+  const examId = Array.isArray(examIdParam) ? examIdParam[0] : examIdParam;
+  const isEditing = Boolean(examId);
+
+  // Languages come from the backend so admin can publish for any supported
+  // language. Falls back to the static list if the API is unreachable.
+  const [languagesList, setLanguagesList] = useState(STATIC_LANGUAGES);
+  const [language, setLanguage] = useState(STATIC_LANGUAGES[0]?.name || "English");
   const [level, setLevel] = useState("A1");
+  const [publishing, setPublishing] = useState(false);
+  const [loadingExam, setLoadingExam] = useState(isEditing);
+
+  useEffect(() => {
+    let cancelled = false;
+    listLanguages()
+      .then((data) => {
+        if (cancelled || !Array.isArray(data) || data.length === 0) return;
+        setLanguagesList(data);
+        if (!data.some((l) => l.name === language)) {
+          setLanguage(data[0].name);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [picker, setPicker] = useState(null); // 'language' | 'level'
   const [activeSection, setActiveSection] = useState("reading");
 
@@ -36,6 +81,73 @@ export default function AdminExamBuilder() {
     listening: [],
     writing: [],
   });
+
+  // When we land on the screen with an examId, fetch the full exam and
+  // populate the same form fields the create flow uses. Question prompts
+  // are stored as `[SectionLabel] real prompt` on the backend (the four
+  // section tabs are UX-only), so we strip the prefix back into the right
+  // section bucket here.
+  useEffect(() => {
+    if (!isEditing) return;
+    let cancelled = false;
+    setLoadingExam(true);
+    adminGetExam(examId)
+      .then((exam) => {
+        if (cancelled || !exam) return;
+        if (exam.language) setLanguage(exam.language);
+        if (exam.level) setLevel(exam.level);
+
+        const sectionLabelToId = SECTIONS.reduce((acc, s) => {
+          acc[s.label.toLowerCase()] = s.id;
+          return acc;
+        }, {});
+        const grouped = { reading: [], speaking: [], listening: [], writing: [] };
+        for (const q of exam.questions || []) {
+          const raw = q.question_text || "";
+          const match = raw.match(/^\[(.+?)\]\s*(.*)$/s);
+          let sectionId = "reading";
+          let prompt = raw;
+          if (match) {
+            const labelKey = match[1].trim().toLowerCase();
+            if (sectionLabelToId[labelKey]) {
+              sectionId = sectionLabelToId[labelKey];
+              prompt = match[2];
+            }
+          }
+          const letters = ["A", "B", "C", "D"];
+          const correctIndex = Math.max(
+            0,
+            letters.indexOf((q.correct_answer || "A").toUpperCase()),
+          );
+          grouped[sectionId].push({
+            id: q.question_id,
+            type: "mcq",
+            prompt,
+            options: [q.option_a, q.option_b, q.option_c, q.option_d],
+            correctIndex,
+          });
+        }
+        setQuestions(grouped);
+        // Open the first section that actually has questions so the admin
+        // sees something straight away.
+        const firstNonEmpty = SECTIONS.find((s) => grouped[s.id].length > 0);
+        if (firstNonEmpty) setActiveSection(firstNonEmpty.id);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        notifyHook(
+          "Could not load exam",
+          e?.message || "The exam could not be opened. Please try again.",
+          { tone: "error" },
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingExam(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [examId, isEditing]);
 
   const [showQuestionModal, setShowQuestionModal] = useState(false);
   const [editingQuestion, setEditingQuestion] = useState(null);
@@ -72,13 +184,13 @@ export default function AdminExamBuilder() {
 
   const handleSaveQuestion = () => {
     if (!draftPrompt.trim()) {
-      Alert.alert("Prompt required", "Please enter the question prompt.");
+      notify("Prompt required", "Please enter the question prompt.");
       return;
     }
     if (draftType === "mcq") {
       const filled = draftOptions.filter((o) => o.trim());
       if (filled.length < 2) {
-        Alert.alert(
+        notify(
           "Add options",
           "Multiple choice questions need at least 2 options.",
         );
@@ -111,37 +223,119 @@ export default function AdminExamBuilder() {
     setShowQuestionModal(false);
   };
 
-  const removeQuestion = (id) => {
-    Alert.alert("Remove question?", "This will delete the question.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: () =>
-          setQuestions((prev) => ({
-            ...prev,
-            [activeSection]: prev[activeSection].filter((q) => q.id !== id),
-          })),
-      },
-    ]);
+  const removeQuestion = async (id) => {
+    const ok = await confirmAction(
+      "Remove question?",
+      "This will delete the question.",
+    );
+    if (!ok) return;
+    setQuestions((prev) => ({
+      ...prev,
+      [activeSection]: prev[activeSection].filter((q) => q.id !== id),
+    }));
   };
 
-  const handlePublish = () => {
+  const handlePublish = async () => {
+    if (publishing) return;
     if (totalQuestions === 0) {
-      Alert.alert("Empty exam", "Add at least one question before publishing.");
+      notify("Empty exam", "Add at least one question before publishing.");
       return;
     }
-    Alert.alert(
-      "Exam published",
-      `${language} ${level} exam saved with ${totalQuestions} question${
-        totalQuestions === 1 ? "" : "s"
-      }. Tutors will see it in the language exam template.`,
-      [{ text: "OK", onPress: () => router.replace("/admin-dashboard") }],
-    );
+
+    // The DB stores flat MCQ questions; the four section tabs are just a UX
+    // grouping in the builder. Flatten everything into a single payload and
+    // skip any open-answer drafts (backend only supports A/B/C/D today).
+    const flat = [];
+    for (const section of SECTIONS) {
+      const list = questions[section.id] || [];
+      for (const q of list) {
+        if (q.type !== "mcq") continue;
+        const options = q.options || [];
+        const letters = ["A", "B", "C", "D"];
+        const filled = options.map((o) => (o || "").trim());
+        // Backend requires four options. Pad missing entries with placeholder
+        // copies of the question prompt so the row still satisfies NOT NULL.
+        while (filled.length < 4) filled.push(filled[0] || q.prompt || "—");
+        const correctIdx = Math.max(0, Math.min(3, q.correctIndex ?? 0));
+        flat.push({
+          question_text: `[${section.label}] ${q.prompt}`,
+          option_a: filled[0] || "—",
+          option_b: filled[1] || "—",
+          option_c: filled[2] || "—",
+          option_d: filled[3] || "—",
+          correct_answer: letters[correctIdx],
+        });
+      }
+    }
+
+    if (flat.length === 0) {
+      notify(
+        "No MCQ questions",
+        "Add at least one multiple choice question — the backend only stores MCQ exams today.",
+      );
+      return;
+    }
+
+    const lang = languagesList.find((l) => l.name === language);
+    if (!lang?.id) {
+      notify("Language not recognised", "Pick a language from the list.");
+      return;
+    }
+
+    setPublishing(true);
+    try {
+      const payload = {
+        language_id: Number(lang.id),
+        level,
+        title: `${language} ${level} exam`,
+        questions: flat,
+      };
+      const result = isEditing
+        ? await adminUpdateExam(examId, payload)
+        : await adminCreateExam({ ...payload, is_active: true });
+      // eslint-disable-next-line no-console
+      console.log("[admin-exam-builder] save OK", result);
+
+      // Reset the form so a second publish doesn't carry stale questions or
+      // section tabs forward — even though navigating away unmounts the screen,
+      // we reset defensively in case the user bounces back via history.
+      setQuestions({ reading: [], speaking: [], listening: [], writing: [] });
+      setActiveSection("reading");
+
+      const count = result.total_questions ?? flat.length;
+      const langName = result.language || language;
+      const levelName = result.level || level;
+      const successTitle = isEditing ? "Changes saved" : "Exam published";
+      const publishedLabel =
+        result.is_active === false ? "saved (currently unpublished)" : "published";
+      const successMessage = isEditing
+        ? `${langName} ${levelName} exam updated with ${count} question${count === 1 ? "" : "s"}.`
+        : `${langName} ${levelName} exam ${publishedLabel} with ${count} question${count === 1 ? "" : "s"}. Tutors of that language will see it.`;
+
+      // Success tone → green check icon, dismiss auto-navigates back.
+      notifyHook(successTitle, successMessage, { tone: "success" }).then(() =>
+        router.replace(isEditing ? "/admin-exams" : "/admin-dashboard"),
+      );
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.log("[admin-exam-builder] save failed", e);
+      notifyHook(
+        isEditing ? "Could not save changes" : "Could not publish",
+        e?.message ||
+          "The server rejected the request. Make sure the exams migration has been applied and you are logged in as admin.",
+        { tone: "error" },
+      );
+    } finally {
+      setPublishing(false);
+    }
   };
 
   const pickerOptions =
-    picker === "language" ? LANGUAGES : picker === "level" ? LEVELS : [];
+    picker === "language"
+      ? languagesList.map((l) => l.name)
+      : picker === "level"
+      ? LEVELS
+      : [];
 
   const choosePickerOption = (val) => {
     if (picker === "language") setLanguage(val);
@@ -152,13 +346,24 @@ export default function AdminExamBuilder() {
   return (
     <View style={styles.wrapper}>
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => safeBack("/admin-dashboard")}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => safeBack(isEditing ? "/admin-exams" : "/admin-dashboard")}
+        >
           <Ionicons name="chevron-back" size={20} color="#FFFBFA" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Exam Builder</Text>
+        <Text style={styles.headerTitle}>
+          {isEditing ? "Edit Exam" : "Exam Builder"}
+        </Text>
         <View style={{ width: 36 }} />
       </View>
 
+      {loadingExam && (
+        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+          <ActivityIndicator color="#FF9E6D" />
+        </View>
+      )}
+      {!loadingExam && (
       <ScrollView
         contentContainerStyle={{ paddingBottom: 120 }}
         showsVerticalScrollIndicator={false}
@@ -263,7 +468,7 @@ export default function AdminExamBuilder() {
                           : "ellipse-outline"
                       }
                       size={16}
-                      color={i === q.correctIndex ? "#3FA66E" : "#A89080"}
+                      color={i === q.correctIndex ? "#FF9E6D" : "#A89080"}
                     />
                     <Text
                       style={[
@@ -284,13 +489,24 @@ export default function AdminExamBuilder() {
           <Text style={styles.addBtnText}>Add question</Text>
         </TouchableOpacity>
       </ScrollView>
+      )}
 
       <View style={styles.footer}>
         <Text style={styles.footerText}>
           {totalQuestions} total question{totalQuestions === 1 ? "" : "s"}
         </Text>
-        <TouchableOpacity style={styles.publishBtn} onPress={handlePublish}>
-          <Text style={styles.publishText}>Publish exam</Text>
+        <TouchableOpacity
+          style={[styles.publishBtn, publishing && { opacity: 0.6 }]}
+          onPress={handlePublish}
+          disabled={publishing}
+        >
+          {publishing ? (
+            <ActivityIndicator color="#FFFBFA" />
+          ) : (
+            <Text style={styles.publishText}>
+              {isEditing ? "Save changes" : "Publish exam"}
+            </Text>
+          )}
         </TouchableOpacity>
       </View>
 
@@ -416,7 +632,7 @@ export default function AdminExamBuilder() {
                             : "ellipse-outline"
                         }
                         size={20}
-                        color={i === draftCorrect ? "#3FA66E" : "#A89080"}
+                        color={i === draftCorrect ? "#FF9E6D" : "#A89080"}
                       />
                     </TouchableOpacity>
                     <TextInput
@@ -454,6 +670,8 @@ export default function AdminExamBuilder() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <AlertHost />
     </View>
   );
 }
@@ -606,7 +824,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 20,
     marginBottom: 12,
     padding: 14,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#FFFBFA",
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#F0EDEA",
@@ -667,7 +885,7 @@ const styles = StyleSheet.create({
   },
 
   optionTextCorrect: {
-    color: "#3FA66E",
+    color: "#FF9E6D",
     fontWeight: "600",
   },
 
@@ -716,7 +934,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
     height: 42,
     borderRadius: 22,
-    backgroundColor: "#3FA66E",
+    // Matches the rest of the project's primary action pill (the orange
+    // "Sign Up", "Confirm Payment", "Continue with account" buttons).
+    backgroundColor: "#FF9E6D",
     alignItems: "center",
     justifyContent: "center",
   },

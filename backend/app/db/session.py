@@ -12,15 +12,27 @@ from sqlalchemy.orm import sessionmaker
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
-logger = get_logger("nativetalk.db")
+logger = get_logger("NativeTalk.db")
 settings = get_settings()
 
 engine = create_engine(
     settings.DATABASE_URL,
-    echo=False,          # set True locally for SQL debug output
-    pool_pre_ping=True,  # verify connections before checkout
+    echo=False,           # set True locally for SQL debug output
+    pool_pre_ping=True,   # verify connections before checkout
+    pool_recycle=180,     # drop connections older than 3 min (Supabase /
+                          # pgbouncer kills idle ones quietly, which used to
+                          # surface as "server closed the connection
+                          # unexpectedly" on the next query)
     pool_size=5,
     max_overflow=10,
+    connect_args={
+        # TCP keepalives keep the socket alive across NAT / firewall
+        # idle timeouts so the kernel notices a dead peer before SQL does.
+        "keepalives":          1,
+        "keepalives_idle":     30,
+        "keepalives_interval": 10,
+        "keepalives_count":    3,
+    },
 )
 
 SessionLocal = sessionmaker(

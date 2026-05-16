@@ -16,13 +16,37 @@ class TeacherProfileOut(BaseModel):
     passed_exam:   bool
     bio:           Optional[str] = None
     hourly_rate:   Optional[float] = None
+    payment_plan:  str = "hour_by_hour"
+    # User-sourced fields (populated by the endpoint)
+    full_name:     Optional[str] = None
+    profile_photo: Optional[str] = None
+    email:         Optional[str] = None
+    language_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
 
 class TeacherUpdate(BaseModel):
-    bio:        Optional[str] = None
-    hourly_rate: Optional[int] = None
+    bio:           Optional[str]  = None
+    hourly_rate:   Optional[int]  = None
+    is_certified:  Optional[bool] = None
+    has_experience: Optional[bool] = None
+    payment_plan:  Optional[str]  = None   # "hour_by_hour" | "50_50" | "80_20"
+
+
+class TeacherOnboardingRequest(BaseModel):
+    """
+    Used by Google-authenticated users (and any existing user already holding
+    role='teacher') to create the missing Teacher row. The Teacher table
+    requires a language_id, which is not collected during Google sign-in, so
+    the frontend posts to this endpoint after the user picks language and
+    certification level.
+    """
+    language_id:    int
+    is_native:      Optional[bool] = None
+    is_certified:   Optional[bool] = None
+    has_experience: Optional[bool] = None
+    bio:            Optional[str]  = None
 
 
 class AvailabilityCreate(BaseModel):

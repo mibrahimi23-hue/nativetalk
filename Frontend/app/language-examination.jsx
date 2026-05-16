@@ -1,7 +1,10 @@
-import { Ionicons } from "@expo/vector-icons";
+﻿import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { safeBack } from "@/hooks/use-safe-back";
+import { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   Image,
   ScrollView,
   StyleSheet,
@@ -9,6 +12,9 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useUser } from "@/contexts/user-context";
+import { findLanguageByName } from "@/constants/languages";
+import { listExamsByLanguage } from "@/services/exams";
 
 const examData = {
   1: {
@@ -32,8 +38,71 @@ const examData = {
 };
 
 export default function LanguageExamination() {
-  const { certId } = useLocalSearchParams();
+  const params = useLocalSearchParams();
+  const certId = params.certId;
   const data = examData[certId] || examData[1];
+  const { profile, user } = useUser();
+
+  // Only the "no certificate" branch (certId=1) actually has to take an exam —
+  // the other two just continue. For the exam branch we look up an exam for
+  // the tutor's language and pass its id forward so /language-exam can fetch
+  // real questions.
+  const [examId, setExamId] = useState(null);
+  const [examMeta, setExamMeta] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const needsExam = String(certId || "1") === "1";
+
+  useEffect(() => {
+    if (!needsExam) return;
+
+    // Resolve language id from explicit param first, then user profile.
+    const languageId =
+      Number(params.languageId) ||
+      Number(profile.languageId) ||
+      (profile.language ? findLanguageByName(profile.language)?.id : null) ||
+      Number(user?.language_id) ||
+      null;
+    if (!languageId) return;
+
+    let cancelled = false;
+    setLoading(true);
+    listExamsByLanguage(languageId)
+      .then((res) => {
+        if (cancelled) return;
+        const first = Array.isArray(res?.exams) ? res.exams[0] : null;
+        if (first) {
+          setExamId(first.exam_id);
+          setExamMeta({ ...first, language: res.language });
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsExam, params.languageId, profile.languageId, profile.language, user?.language_id]);
+
+  const handleContinue = () => {
+    if (!needsExam) {
+      router.push("/availability");
+      return;
+    }
+    if (loading) return;
+    if (!examId) {
+      Alert.alert(
+        "Exam unavailable",
+        "There is no published exam for this language yet. Please contact support — admin must publish one before you can qualify.",
+      );
+      return;
+    }
+    router.push({
+      pathname: "/language-exam",
+      params: { examId, ...params },
+    });
+  };
 
   return (
     <View style={styles.wrapper}>
@@ -57,7 +126,7 @@ export default function LanguageExamination() {
         {/* Content */}
         <View style={styles.content}>
           <Text style={styles.title}>
-            The maximum level you can teach is {data.level}
+            The maximum level you can teach is {examMeta?.level || data.level}
           </Text>
           <Text style={styles.importantLabel}>Important Information!</Text>
           <Text style={styles.infoText}>{data.info}</Text>
@@ -70,9 +139,14 @@ export default function LanguageExamination() {
       <View style={styles.bottomBtn}>
         <TouchableOpacity
           style={styles.continueBtn}
-          onPress={() => router.push("/language-exam")}
+          onPress={handleContinue}
+          disabled={loading}
         >
-          <Text style={styles.continueBtnText}>{data.buttonText}</Text>
+          {loading ? (
+            <ActivityIndicator color="#FFFBFA" />
+          ) : (
+            <Text style={styles.continueBtnText}>{data.buttonText}</Text>
+          )}
         </TouchableOpacity>
       </View>
     </View>
@@ -135,7 +209,7 @@ const styles = StyleSheet.create({
   },
   infoText: {
     fontSize: 14,
-    color: "#555",
+    color: "#7E6D66",
     lineHeight: 22,
   },
 

@@ -1,52 +1,53 @@
-// NativeTalk Design System — single source of truth for all colors, spacing, typography.
+/**
+ * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
+ * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
+ */
 
-export const C = {
-  // Backgrounds
-  bg:          '#FFFBFA',   // warm cream – main screen background
-  card:        '#FFFFFF',   // pure white cards
-  cardAlt:     '#FFF6F0',   // light orange tint card
+import { Platform } from 'react-native';
 
-  // Primary brand orange
-  primary:     '#E87028',   // main CTA orange
-  primaryDark: '#C95E1E',   // pressed / darker orange
-  primaryLight:'#FFF0E6',   // very light orange tint (chip bg, input focus)
-  primaryMid:  '#FFD4B0',   // medium orange (dividers, tags)
+const tintColorLight = '#0a7ea4';
+const tintColorDark = '#fff';
 
-  // Text
-  text:        '#28221B',   // dark brown-black body text
-  textSub:     '#7E6D66',   // secondary / muted text
-  textPlaceholder: '#B8A49C', // placeholder
-  textLight:   '#FFFFFF',   // text on dark/orange bg
+export const Colors = {
+  light: {
+    text: '#11181C',
+    background: '#fff',
+    tint: tintColorLight,
+    icon: '#687076',
+    tabIconDefault: '#687076',
+    tabIconSelected: tintColorLight,
+  },
+  dark: {
+    text: '#ECEDEE',
+    background: '#151718',
+    tint: tintColorDark,
+    icon: '#9BA1A6',
+    tabIconDefault: '#9BA1A6',
+    tabIconSelected: tintColorDark,
+  },
+};
 
-  // Borders & dividers
-  border:      '#EAD9D0',   // default input / card border
-  divider:     '#F2E4DC',   // very light divider
-
-  // Status
-  success:     '#3CB371',
-  successBg:   '#EAF7EE',
-  error:       '#D84040',
-  danger:      '#D84040',
-  errorBg:     '#FDEAEA',
-  warning:     '#F5A623',
-  warningBg:   '#FEF8EC',
-
-  // Misc
-  overlay:     'rgba(40,34,27,0.45)',
-  shadow:      '#28221B',
-} as const;
-
-export const F = {
-  heading: 'Domine',
-  body:    'Outfit',
-  label:   'Epilogue',
-} as const;
-
-export const R = {
-  xs: 8,
-  sm: 12,
-  md: 16,
-  lg: 24,
-  xl: 32,
-  pill: 999,
-} as const;
+export const Fonts = Platform.select({
+  ios: {
+    /** iOS `UIFontDescriptorSystemDesignDefault` */
+    sans: 'system-ui',
+    /** iOS `UIFontDescriptorSystemDesignSerif` */
+    serif: 'ui-serif',
+    /** iOS `UIFontDescriptorSystemDesignRounded` */
+    rounded: 'ui-rounded',
+    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
+    mono: 'ui-monospace',
+  },
+  default: {
+    sans: 'normal',
+    serif: 'serif',
+    rounded: 'normal',
+    mono: 'monospace',
+  },
+  web: {
+    sans: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    serif: "Georgia, 'Times New Roman', serif",
+    rounded: "'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif",
+    mono: "SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+  },
+});

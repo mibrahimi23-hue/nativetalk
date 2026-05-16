@@ -16,8 +16,10 @@ class User(Base):
     password_hash = Column(Text, nullable=False)
     role          = Column(String(50), nullable=False)
     timezone      = Column(String(60), default='UTC')
+    location      = Column(String(120), nullable=True)
     profile_photo = Column(Text)
-    phone         = Column(String(20), nullable=True)   # ← ADDED
+    phone         = Column(String(20), nullable=True)
+    google_id     = Column(String(255), unique=True, nullable=True, index=True)
     is_active     = Column(Boolean, default=True)
     is_suspended  = Column(Boolean, default=False)
     created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())

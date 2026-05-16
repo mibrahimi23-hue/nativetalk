@@ -1,4 +1,4 @@
-import { Ionicons } from "@expo/vector-icons";
+﻿import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useState } from "react";
 import {
@@ -171,7 +171,14 @@ export default function StudentLessonsList() {
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={styles.joinBtn}
-                        onPress={() => router.push("/videocall")}
+                        onPress={() =>
+                          router.push({
+                            pathname: "/videocall",
+                            params: lesson.id
+                              ? { sessionId: String(lesson.id) }
+                              : {},
+                          })
+                        }
                       >
                         <Text style={styles.joinText}>Join</Text>
                       </TouchableOpacity>
@@ -208,7 +215,7 @@ export default function StudentLessonsList() {
 
                 <TouchableOpacity
                   style={styles.cancelBtn}
-                  onPress={() => router.push("/cancel-session-student")}
+                  onPress={() => router.push("/cancel-session")}
                 >
                   <Text style={styles.cancelText}>Cancel Upcoming lesson</Text>
                 </TouchableOpacity>
@@ -292,7 +299,7 @@ const styles = StyleSheet.create({
   tabText: {
     fontFamily: "Outfit",
     fontSize: 13,
-    color: "#777",
+    color: "#7E6D66",
     paddingBottom: 7,
   },
 

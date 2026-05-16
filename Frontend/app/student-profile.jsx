@@ -3,15 +3,19 @@ import { router } from "expo-router";
 import {
   Alert,
   Image,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { Avatar } from "@/components/avatar";
 import { StudentBottomNav } from "@/components/student-bottom-nav";
 import { useUser } from "@/contexts/user-context";
 import { useSafeBack } from "@/hooks/use-safe-back";
+import { buildMediaUrl } from "@/services/api";
+
 
 export default function StudentProfile() {
   const { profile, logout } = useUser();
@@ -27,18 +31,9 @@ export default function StudentProfile() {
     ? `Learning ${profile.language}`
     : "Set your learning target";
 
-  const handleLogout = () => {
-    Alert.alert("Log out", "Are you sure you want to log out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Log out",
-        style: "destructive",
-        onPress: () => {
-          logout();
-          router.replace("/login");
-        },
-      },
-    ]);
+  const handleLogout = async () => {
+    await logout();
+    router.replace("/login");
   };
 
   return (
@@ -55,14 +50,14 @@ export default function StudentProfile() {
         contentContainerStyle={{ paddingBottom: 90 }}
         showsVerticalScrollIndicator={false}
       >
-        <Image
-          source={{
-            uri:
-              profile.avatar ||
-              "https://images.unsplash.com/photo-1500648767791-00dcc994a43e",
-          }}
-          style={styles.avatar}
-        />
+        <View style={styles.avatarWrap}>
+          <Avatar
+            uri={buildMediaUrl(profile.avatar) || profile.avatar || null}
+            name={fullName || profile.email}
+            seed={profile.email || fullName}
+            size={92}
+          />
+        </View>
 
         <Text style={styles.name}>{fullName}</Text>
         <Text style={styles.bio}>{bio}</Text>
@@ -80,6 +75,11 @@ export default function StudentProfile() {
         <MenuItem icon="bookmark-outline" title="Saved tutors" route="/saved-tutors" />
         <MenuItem icon="information-circle-outline" title="About" route="/about" />
         <MenuItem icon="lock-closed-outline" title="Privacy" route="/privacy" />
+        <MenuItem
+          icon="star-outline"
+          title="Tutor feedback on you"
+          route="/reviews"
+        />
         <MenuItem
           icon="notifications-outline"
           title="Notifications"
@@ -147,6 +147,10 @@ const styles = StyleSheet.create({
     width: 92,
     height: 92,
     borderRadius: 46,
+    alignSelf: "center",
+    marginBottom: 10,
+  },
+  avatarWrap: {
     alignSelf: "center",
     marginBottom: 10,
   },

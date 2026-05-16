@@ -1,9 +1,12 @@
-import { Ionicons } from "@expo/vector-icons";
+﻿import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,23 +15,71 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import * as DocumentPicker from "expo-document-picker";
 import { TutorBottomNav } from "@/components/tutor-bottom-nav";
 import { useUser } from "@/contexts/user-context";
 import { useSafeBack } from "@/hooks/use-safe-back";
+import { buildMediaUrl } from "@/services/api";
+import { deleteMaterial, listMaterials, uploadMaterial } from "@/services/materials";
+import { updateLesson as updateLessonOnBackend } from "@/services/lessons";
+import { findLanguageById, findLanguageByName } from "@/constants/languages";
 
 const TABS = ["A1", "A2", "B1", "B2"];
+const LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
 
 export default function LanguageLessons() {
-  const { lessons, materials, addMaterial, role } = useUser();
+  const { lessons, role, profile, user, updateLesson } = useUser();
   const safeBack = useSafeBack();
   const [activeTab, setActiveTab] = useState("A1");
   const [showMaterialModal, setShowMaterialModal] = useState(false);
   const [materialTitle, setMaterialTitle] = useState("");
   const [materialFile, setMaterialFile] = useState(null);
-  const [lessonsState, setLessonsState] = useState("preview"); // 'preview' | 'expanded' | 'collapsed'
+  const [saving, setSaving] = useState(false);
+  const [lessonsState, setLessonsState] = useState("preview");
   const [materialsState, setMaterialsState] = useState("preview");
 
+  // Edit-lesson modal state. Stores the lesson currently being edited plus
+  // the draft fields. Only tutors get to open this; the row's edit pencil
+  // is hidden for students and for booked sessions.
+  const [editingLesson, setEditingLesson] = useState(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editLevel, setEditLevel] = useState("A1");
+  const [editLevelPickerOpen, setEditLevelPickerOpen] = useState(false);
+  const [savingLessonEdit, setSavingLessonEdit] = useState(false);
+
+  // Materials are now loaded from the backend. Tutor sees their own uploads;
+  // student sees materials matching their enrolled language(s) and the level
+  // tab they're viewing. The previous in-memory `materials` from useUser()
+  // never reached the backend so the student couldn't see what the tutor
+  // added.
+  const [materials, setMaterials] = useState([]);
+  const [loadingMaterials, setLoadingMaterials] = useState(true);
+  const [deletingId, setDeletingId] = useState(null);
+
   const isTutor = role === "Tutor";
+
+  const loadMaterials = useCallback(async () => {
+    setLoadingMaterials(true);
+    try {
+      const lang =
+        findLanguageById(profile.languageId) ||
+        findLanguageByName(profile.language);
+      const data = await listMaterials({
+        level: activeTab,
+        language_id: lang?.id,
+      });
+      setMaterials(Array.isArray(data) ? data : []);
+    } catch {
+      setMaterials([]);
+    } finally {
+      setLoadingMaterials(false);
+    }
+  }, [activeTab, profile.languageId, profile.language]);
+
+  useEffect(() => {
+    loadMaterials();
+  }, [loadMaterials]);
 
   const allVisibleLessons = lessons.filter(
     (l) => !l.level || l.level === activeTab,
@@ -88,14 +139,24 @@ export default function LanguageLessons() {
       ? "chevron-up"
       : "chevron-forward";
 
-  const handlePickFile = () => {
-    setMaterialFile({
-      name: `material-${Date.now()}.pdf`,
-      pickedAt: Date.now(),
-    });
+  const handlePickFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["application/pdf", "image/*", "audio/mpeg"],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset) return;
+      setMaterialFile(asset);
+    } catch (e) {
+      Alert.alert("Could not pick file", e?.message || "Please try again.");
+    }
   };
 
-  const handleSaveMaterial = () => {
+  const handleSaveMaterial = async () => {
+    if (saving) return;
     if (!materialTitle.trim()) {
       Alert.alert("Title required", "Please enter a title for the material.");
       return;
@@ -107,10 +168,158 @@ export default function LanguageLessons() {
       );
       return;
     }
-    addMaterial({ title: materialTitle.trim(), file: materialFile });
-    setMaterialTitle("");
-    setMaterialFile(null);
-    setShowMaterialModal(false);
+    const lang =
+      findLanguageById(profile.languageId) ||
+      findLanguageByName(profile.language) ||
+      (user?.language_id ? findLanguageById(user.language_id) : null);
+    if (!lang?.id) {
+      Alert.alert(
+        "Language unknown",
+        "Could not determine your teaching language. Update your profile first.",
+      );
+      return;
+    }
+
+    setSaving(true);
+    try {
+      // Pick a sensible default `type` since the wireframe modal doesn't ask
+      // for it. Backend requires one of: vocabulary_list, grammar_guide,
+      // practice_exercises, audio_lesson. We default to grammar_guide and
+      // switch to audio_lesson when the file is audio.
+      const isAudio =
+        (materialFile.mimeType || "").startsWith("audio/") ||
+        /\.(mp3|m4a|wav)$/i.test(materialFile.name || "");
+      await uploadMaterial({
+        title: materialTitle.trim(),
+        type: isAudio ? "audio_lesson" : "grammar_guide",
+        description: "",
+        language_id: lang.id,
+        level: activeTab,
+        fileUri: materialFile.uri,
+        // Pass the raw asset through too so the multipart upload uses the
+        // real File object on web.
+        asset: materialFile,
+      });
+      setMaterialTitle("");
+      setMaterialFile(null);
+      setShowMaterialModal(false);
+      await loadMaterials();
+    } catch (e) {
+      Alert.alert("Upload failed", e?.message || "Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // A lesson is editable when it was created by the tutor (i.e. a lesson_note
+  // — surfaced with status "upcoming" or "completed" and no live join button).
+  // Booked sessions (status "join") are driven by the booking, not the tutor,
+  // so we don't show an edit affordance for those.
+  const isEditableLesson = (lesson) =>
+    isTutor && lesson && lesson.status !== "join";
+
+  const openEditLesson = (lesson) => {
+    setEditingLesson(lesson);
+    setEditTitle(lesson.title || "");
+    setEditDescription(lesson.description || "");
+    setEditLevel(lesson.level || activeTab || "A1");
+    setEditLevelPickerOpen(false);
+  };
+
+  const closeEditLesson = () => {
+    if (savingLessonEdit) return;
+    setEditingLesson(null);
+    setEditLevelPickerOpen(false);
+  };
+
+  const handleSaveLessonEdit = async () => {
+    if (savingLessonEdit || !editingLesson) return;
+    const title = editTitle.trim();
+    if (!title) {
+      Alert.alert("Title required", "Please enter a title for the lesson.");
+      return;
+    }
+    if (!LEVELS.includes(editLevel)) {
+      Alert.alert("Pick a level", "Choose one of A1, A2, B1, B2, C1, C2.");
+      return;
+    }
+
+    setSavingLessonEdit(true);
+    try {
+      const payload = {
+        title,
+        description: editDescription.trim(),
+        level: editLevel,
+      };
+      // Lessons created in-memory in this session use a numeric `Date.now()`
+      // id (no backend row yet), so we only persist the change to the API
+      // when the id looks like a UUID. Either way the in-memory copy is
+      // refreshed so the UI reflects the edit immediately.
+      const looksLikeUuid =
+        typeof editingLesson.id === "string" &&
+        /^[0-9a-f-]{30,}$/i.test(editingLesson.id);
+      if (looksLikeUuid) {
+        await updateLessonOnBackend(editingLesson.id, payload);
+      }
+      updateLesson(editingLesson.id, payload);
+      setEditingLesson(null);
+    } catch (e) {
+      Alert.alert(
+        "Could not save",
+        e?.message || "The lesson could not be updated. Please try again.",
+      );
+    } finally {
+      setSavingLessonEdit(false);
+    }
+  };
+
+  const handleDeleteMaterial = (mat) => {
+    if (deletingId) return;
+    const performDelete = async () => {
+      setDeletingId(mat.id);
+      try {
+        await deleteMaterial(mat.id);
+        await loadMaterials();
+      } catch (e) {
+        Alert.alert(
+          "Could not delete",
+          e?.message || "The material could not be deleted. Please try again.",
+        );
+      } finally {
+        setDeletingId(null);
+      }
+    };
+
+    if (Platform.OS === "web") {
+      const ok = typeof window !== "undefined" && window.confirm
+        ? window.confirm(`Delete "${mat.title}"? This cannot be undone.`)
+        : true;
+      if (ok) performDelete();
+      return;
+    }
+    Alert.alert(
+      "Delete material",
+      `Delete "${mat.title}"? This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: performDelete },
+      ],
+    );
+  };
+
+  const handleOpenMaterial = async (mat) => {
+    const url = buildMediaUrl(mat.download_url || mat.file_path);
+    if (!url) {
+      Alert.alert("No document", "This material doesn't have a file attached.");
+      return;
+    }
+    try {
+      const ok = await Linking.canOpenURL(url);
+      if (ok) await Linking.openURL(url);
+      else if (Platform.OS === "web") window.open(url, "_blank");
+    } catch {
+      if (Platform.OS === "web") window.open(url, "_blank");
+    }
   };
 
   const closeModal = () => {
@@ -183,10 +392,24 @@ export default function LanguageLessons() {
                 )}
               </View>
 
+              {isEditableLesson(lesson) && (
+                <TouchableOpacity
+                  style={styles.editLessonBtn}
+                  onPress={() => openEditLesson(lesson)}
+                >
+                  <Ionicons name="pencil" size={16} color="#28221B" />
+                </TouchableOpacity>
+              )}
+
               {lesson.status === "join" && (
                 <TouchableOpacity
                   style={styles.joinBtn}
-                  onPress={() => router.push("/videocall")}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/videocall",
+                      params: lesson.id ? { sessionId: String(lesson.id) } : {},
+                    })
+                  }
                 >
                   <Text style={styles.joinText}>Join</Text>
                 </TouchableOpacity>
@@ -235,17 +458,37 @@ export default function LanguageLessons() {
           <Text style={styles.sectionTitle}>Materials</Text>
         </View>
 
-        {materials.length === 0 && (
+        {loadingMaterials ? (
+          <ActivityIndicator color="#FF9E6D" style={{ marginTop: 10 }} />
+        ) : materials.length === 0 ? (
           <Text style={styles.emptyText}>No materials yet.</Text>
-        )}
+        ) : null}
 
         {visibleMaterials.map((mat, index) => (
           <View key={mat.id}>
             <View style={styles.materialRow}>
               <Text style={styles.materialTitle}>{mat.title}</Text>
-              <TouchableOpacity style={styles.downloadIcon}>
-                <Ionicons name="download-outline" size={20} color="#28221B" />
-              </TouchableOpacity>
+              <View style={styles.materialActions}>
+                <TouchableOpacity
+                  style={styles.downloadIcon}
+                  onPress={() => handleOpenMaterial(mat)}
+                >
+                  <Ionicons name="download-outline" size={20} color="#28221B" />
+                </TouchableOpacity>
+                {isTutor && (
+                  <TouchableOpacity
+                    style={styles.deleteIcon}
+                    onPress={() => handleDeleteMaterial(mat)}
+                    disabled={deletingId === mat.id}
+                  >
+                    {deletingId === mat.id ? (
+                      <ActivityIndicator size="small" color="#DD8153" />
+                    ) : (
+                      <Ionicons name="trash-outline" size={18} color="#DD8153" />
+                    )}
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
 
             {index < visibleMaterials.length - 1 && <View style={styles.divider} />}
@@ -316,14 +559,126 @@ export default function LanguageLessons() {
               <TouchableOpacity
                 style={[styles.modalBtn, styles.modalBtnGhost]}
                 onPress={closeModal}
+                disabled={saving}
               >
                 <Text style={styles.modalBtnGhostText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalBtn, styles.modalBtnPrimary]}
+                style={[
+                  styles.modalBtn,
+                  styles.modalBtnPrimary,
+                  saving && { opacity: 0.7 },
+                ]}
                 onPress={handleSaveMaterial}
+                disabled={saving}
               >
-                <Text style={styles.modalBtnPrimaryText}>Save</Text>
+                {saving ? (
+                  <ActivityIndicator color="#FFFBFA" />
+                ) : (
+                  <Text style={styles.modalBtnPrimaryText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={editingLesson !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeEditLesson}
+      >
+        <Pressable style={styles.modalOverlay} onPress={closeEditLesson}>
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Text style={styles.modalTitle}>Edit Lesson</Text>
+
+            <Text style={styles.modalLabel}>Title</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Lesson title"
+              placeholderTextColor="#8D7C74"
+              value={editTitle}
+              onChangeText={setEditTitle}
+            />
+
+            <Text style={styles.modalLabel}>Description</Text>
+            <TextInput
+              style={[styles.modalInput, styles.modalTextArea]}
+              placeholder="Description"
+              placeholderTextColor="#8D7C74"
+              value={editDescription}
+              onChangeText={setEditDescription}
+              multiline
+            />
+
+            <Text style={styles.modalLabel}>Level</Text>
+            <TouchableOpacity
+              style={styles.levelSelect}
+              onPress={() => setEditLevelPickerOpen((open) => !open)}
+            >
+              <Text style={styles.levelSelectText}>{editLevel}</Text>
+              <Ionicons
+                name={editLevelPickerOpen ? "chevron-up" : "chevron-down"}
+                size={16}
+                color="#FFFBFA"
+              />
+            </TouchableOpacity>
+            {editLevelPickerOpen && (
+              <View style={styles.levelOptions}>
+                {LEVELS.map((lvl) => {
+                  const selected = lvl === editLevel;
+                  return (
+                    <TouchableOpacity
+                      key={lvl}
+                      style={[
+                        styles.levelOptionRow,
+                        selected && styles.levelOptionRowSelected,
+                      ]}
+                      onPress={() => {
+                        setEditLevel(lvl);
+                        setEditLevelPickerOpen(false);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.levelOptionText,
+                          selected && styles.levelOptionTextSelected,
+                        ]}
+                      >
+                        {lvl}
+                      </Text>
+                      {selected && (
+                        <Ionicons name="checkmark" size={16} color="#FF9E6D" />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.modalBtnGhost]}
+                onPress={closeEditLesson}
+                disabled={savingLessonEdit}
+              >
+                <Text style={styles.modalBtnGhostText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.modalBtn,
+                  styles.modalBtnPrimary,
+                  savingLessonEdit && { opacity: 0.7 },
+                ]}
+                onPress={handleSaveLessonEdit}
+                disabled={savingLessonEdit}
+              >
+                {savingLessonEdit ? (
+                  <ActivityIndicator color="#FFFBFA" />
+                ) : (
+                  <Text style={styles.modalBtnPrimaryText}>Save</Text>
+                )}
               </TouchableOpacity>
             </View>
           </Pressable>
@@ -368,7 +723,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     paddingHorizontal: 20,
     borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+    borderBottomColor: "#EFE6E1",
   },
 
   tabItem: {
@@ -460,8 +815,18 @@ const styles = StyleSheet.create({
   lessonMeta: {
     fontFamily: "Outfit",
     fontSize: 13,
-    color: "#777",
+    color: "#7E6D66",
     marginTop: 3,
+  },
+
+  editLessonBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#F3EDEA",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 8,
   },
 
   joinBtn: {
@@ -479,7 +844,7 @@ const styles = StyleSheet.create({
 
   divider: {
     height: 1,
-    backgroundColor: "#eee",
+    backgroundColor: "#EFE6E1",
   },
 
   actionRow: {
@@ -568,18 +933,33 @@ const styles = StyleSheet.create({
     padding: 2,
   },
 
+  materialActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+
+  deleteIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "#FFF1E8",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
   bottomNav: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
     height: 70,
-    backgroundColor: "#fff",
+    backgroundColor: "#FFFBFA",
     flexDirection: "row",
     justifyContent: "space-around",
     alignItems: "center",
     borderTopWidth: 1,
-    borderTopColor: "#eee",
+    borderTopColor: "#EFE6E1",
     paddingBottom: 10,
   },
 
@@ -626,6 +1006,61 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#28221B",
     marginBottom: 16,
+  },
+
+  modalTextArea: {
+    minHeight: 80,
+    textAlignVertical: "top",
+  },
+
+  levelSelect: {
+    backgroundColor: "#DD8153",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 16,
+  },
+
+  levelSelectText: {
+    fontFamily: "Outfit",
+    fontSize: 14,
+    color: "#FFFBFA",
+    fontWeight: "600",
+  },
+
+  levelOptions: {
+    backgroundColor: "#F3EDEA",
+    borderRadius: 14,
+    padding: 6,
+    marginTop: -8,
+    marginBottom: 16,
+  },
+
+  levelOptionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
+
+  levelOptionRowSelected: {
+    backgroundColor: "#FFF1E8",
+  },
+
+  levelOptionText: {
+    fontFamily: "Outfit",
+    fontSize: 14,
+    color: "#28221B",
+  },
+
+  levelOptionTextSelected: {
+    color: "#FF9E6D",
+    fontWeight: "700",
   },
 
   modalUpload: {
