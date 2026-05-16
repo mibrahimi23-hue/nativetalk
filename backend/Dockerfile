@@ -3,7 +3,6 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
-# Install build tools required for psycopg2-binary + cryptography wheels
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libpq-dev \
@@ -18,22 +17,20 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Runtime lib for psycopg2
 RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
-# Copy application code
 COPY . .
 
-# Non-root user for security
-RUN addgroup --system app && adduser --system --ingroup app app
+# Create uploads folder and set correct ownership BEFORE switching user
+RUN addgroup --system app && adduser --system --ingroup app app \
+    && mkdir -p /app/uploads/avatars \
+    && chown -R app:app /app/uploads
+
 USER app
 
 EXPOSE 8000
 
-# Run Alembic migrations then start Uvicorn.
-# Override CMD in docker-compose for development (--reload flag).
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
