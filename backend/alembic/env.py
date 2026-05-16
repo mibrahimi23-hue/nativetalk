@@ -22,7 +22,9 @@ from sqlalchemy import create_engine, pool
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.core.config import get_settings
-from app.db.base import Base  # imports all models — required for autogenerate
+from app.db.base_class import Base  # correct Base that models use
+# Import all models so Alembic can detect them
+from app.models import certificate, exam, language, material, message, payment, review, session, student, suspension, teacher, users
 
 settings = get_settings()
 
@@ -77,4 +79,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-    
