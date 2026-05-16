@@ -20,12 +20,30 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'users',
-        sa.Column('google_id', sa.String(length=255), nullable=True),
-    )
-    op.create_unique_constraint('uq_users_google_id', 'users', ['google_id'])
-    op.create_index('ix_users_google_id', 'users', ['google_id'], unique=False)
+    # Add column only if it doesn't exist
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255)")
+    
+    # Add unique constraint only if it doesn't exist
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'uq_users_google_id'
+            ) THEN
+                ALTER TABLE users ADD CONSTRAINT uq_users_google_id UNIQUE (google_id);
+            END IF;
+        END $$;
+    """)
+    
+    # Add index only if it doesn't exist
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_indexes WHERE indexname = 'ix_users_google_id'
+            ) THEN
+                CREATE INDEX ix_users_google_id ON users (google_id);
+            END IF;
+        END $$;
+    """)
 
 
 def downgrade() -> None:
